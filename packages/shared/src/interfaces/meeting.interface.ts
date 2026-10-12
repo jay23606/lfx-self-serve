@@ -357,6 +357,13 @@ export interface Meeting {
   /** Invited to meeting (response only) */
   invited: boolean;
   /**
+   * The viewer is invited to the meeting through a committee (response only).
+   * @description True when any of the viewer's registrations for this meeting was added from a committee. Such a
+   * registration is managed by committee membership, so the viewer cannot remove themselves from the meeting.
+   * Unset when the viewer is not invited.
+   */
+  invited_via_committee?: boolean;
+  /**
    * Total registrant count. `GET /public/api/meetings/:id` sets it for an invitee who is not an
    * organizer, so they see how many are invited even when the guest list is hidden from them.
    */
@@ -1959,6 +1966,8 @@ export interface MeLensMeetingFilters {
   project: string | null;
   /** Keep only meetings with no RSVP recorded (upcoming only). */
   pendingRsvpOnly: boolean;
+  /** Keep only meetings the viewer accepted (upcoming only). */
+  acceptedOnly: boolean;
   /** Keep only meetings the viewer organized (created), matching the "Organized by you" chip. */
   organizerOnly: boolean;
   /** Viewer username/LFID used by the `organizerOnly` predicate; null disables matching. */

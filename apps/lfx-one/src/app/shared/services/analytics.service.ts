@@ -1191,7 +1191,7 @@ export class AnalyticsService {
     );
   }
 
-  /** Each period's revenue headline and every event in the four periods, for the Events tab's revenue section. */
+  /** Each period's revenue headline, past events in the four periods and upcoming events, for the Events tab's revenue section. */
   public getEventsRevenue(query: HealthMetricsEventsRevenueQuery): Observable<HealthMetricsEventsRevenue> {
     const params: Record<string, string> = { foundationSlug: query.foundationSlug };
 
@@ -1348,12 +1348,16 @@ export class AnalyticsService {
   }
 
   public getMembersRenewals(query: HealthMetricsMembersRenewalsQuery): Observable<HealthMetricsMembersRenewals> {
-    const params = strictHttpParams().set('foundationSlug', query.foundationSlug).set('offset', String(query.offset)).set('pageSize', String(query.pageSize));
+    const params = strictHttpParams()
+      .set('foundationSlug', query.foundationSlug)
+      .set('window', query.window)
+      .set('offset', String(query.offset))
+      .set('pageSize', String(query.pageSize));
 
     // Errors propagate so the section shows its error state rather than an empty one.
     return this.http.get<HealthMetricsMembersRenewals>('/api/analytics/members-renewals', { params }).pipe(
       catchError((error) => {
-        console.error('[analytics] members-renewals failed', { foundationSlug: query.foundationSlug, error });
+        console.error('[analytics] members-renewals failed', { foundationSlug: query.foundationSlug, window: query.window, error });
         return throwError(() => error);
       })
     );
