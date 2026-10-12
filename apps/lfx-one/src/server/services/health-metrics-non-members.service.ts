@@ -52,6 +52,7 @@ interface OrgRow {
   SORT_RANK: number | null;
   MEMBERSHIP_STATUS: string | null;
   FIT_BAND: string | null;
+  IS_HIGH_FIT: boolean | null;
 }
 
 interface PersonRow {
@@ -66,6 +67,7 @@ interface PersonRow {
   LAST_ATTENDED_DATE: Date | string | null;
   MEETINGS_ATTENDED_COUNT: number | null;
   SORT_RANK: number | null;
+  SCOPE_INDIVIDUALS_COUNT: number | null;
 }
 
 interface ConversionRow {
@@ -278,6 +280,7 @@ export class HealthMetricsNonMembersService {
         contributions_count_${suffix} AS contributions_count
       FROM ${NON_MEMBER_FIT_SCORE_VIEW}
       WHERE foundation_slug = ?
+        -- The flag is the High band among active rows, the same set getOrgs filters as high-fit.
         AND is_high_fit_${suffix}
         AND account_id IS NOT NULL
         AND account_id <> ''

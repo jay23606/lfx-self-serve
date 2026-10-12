@@ -139,7 +139,7 @@ export interface HealthMetricsNonMembersConversion {
   newCount: number | null;
   /** High-fit count × entry-tier fee; `null` when the foundation has no entry-tier fee. */
   estimatedPipelineUsd: number | null;
-  /** Top high-fit organizations from the same `is_high_fit` set as the count. */
+  /** Top high-fit organizations by fit rank, from the High-band active set the count covers. */
   warmest: HealthMetricsNonMembersWarmOrg[];
 }
 

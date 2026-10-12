@@ -110,6 +110,7 @@ describe('buildHealthMetricsNonMembersOrgRows', () => {
     expect(view({ fitBand: 'Medium' })).toMatchObject({ fitLabel: 'Medium', fitDotClass: 'bg-amber-500' });
     expect(view({ fitBand: 'Low' })).toMatchObject({ fitLabel: 'Low', fitDotClass: 'bg-gray-400' });
     expect(view({ fitBand: 'Unrated' })).toMatchObject({ fitLabel: 'Unrated', fitDotClass: 'bg-gray-400' });
+    expect(view({ fitBand: 'constructor' }).fitDotClass).toBe('bg-gray-400');
   });
 
   it('falls back to Non-member and a dash, with no dot, when the model leaves them unset', () => {

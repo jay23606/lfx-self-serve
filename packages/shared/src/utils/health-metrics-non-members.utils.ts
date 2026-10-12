@@ -124,5 +124,6 @@ function formatStat(value: number | null): string {
 function buildFit(fitBand: string | null): Pick<HealthMetricsNonMembersOrgRowView, 'fitLabel' | 'fitDotClass'> {
   const band = fitBand?.trim();
   if (!band) return { fitLabel: '—', fitDotClass: null };
-  return { fitLabel: band, fitDotClass: HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS[band] ?? HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS['Low'] };
+  const dots = HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS;
+  return { fitLabel: band, fitDotClass: Object.hasOwn(dots, band) ? dots[band] : dots['Low'] };
 }
