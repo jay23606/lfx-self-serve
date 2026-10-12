@@ -10,6 +10,7 @@ import {
   MEMBER_BENEFIT_FOUNDATION_SLUG,
   MEMBER_BENEFIT_MAX_CANDIDATE_DOMAINS,
   NEWSLETTER_COMMITTEE_CATEGORY,
+  NEWSLETTER_MEMBER_BENEFIT_NOT_ELIGIBLE_ERROR_CODE,
   NEWSLETTER_NOT_SENT_ERROR_CODE,
 } from '@lfx-one/shared/constants';
 import {
@@ -201,7 +202,7 @@ export class NewsletterMemberBenefitService {
       throw new AuthorizationError('Not eligible to join this newsletter', {
         operation: 'join_newsletter_group',
         service: 'newsletter_member_benefit',
-        code: 'NEWSLETTER_MEMBER_BENEFIT_NOT_ELIGIBLE',
+        code: NEWSLETTER_MEMBER_BENEFIT_NOT_ELIGIBLE_ERROR_CODE,
       });
     }
 
@@ -251,6 +252,25 @@ export class NewsletterMemberBenefitService {
     }
 
     return { verified_emails: verifiedEmails, match: null, denied_reason: 'not_member_company' };
+  }
+
+  /**
+   * The active TLF member company an arbitrary email's domain belongs to (the newsletter invite
+   * check on the invitee's address), or null for a personal mailbox or a non-member domain. Same
+   * index and matching as {@link resolveEligibility}; throws when the index cannot be loaded.
+   */
+  public async findMemberCompanyForEmail(req: Request, m2mToken: string, email: string): Promise<MemberBenefitCompany | null> {
+    const domain = emailDomain(email);
+    if (!domain || isPersonalEmailDomain(domain)) return null;
+    const candidates = candidateMemberDomains(domain).slice(0, MEMBER_BENEFIT_MAX_CANDIDATE_DOMAINS);
+    if (candidates.length === 0) return null;
+
+    const [index, b2bMatches] = await Promise.all([this.getDomainIndex(req, m2mToken), this.findB2bOrgMatches(req, m2mToken, candidates)]);
+    for (const candidate of candidates) {
+      const company = this.pickCompany(candidate, index, b2bMatches);
+      if (company) return company;
+    }
+    return null;
   }
 
   /**
@@ -305,6 +325,12 @@ export class NewsletterMemberBenefitService {
 
     const results = await Promise.all(lookups);
     return results.some(Boolean);
+  }
+
+  /** Whether one email (not the signed-in user) is already on a group's roster — the invite skip check. */
+  public async isEmailInGroup(req: Request, m2mToken: string, committeeUid: string, email: string): Promise<boolean> {
+    if (!isFilterSafeIdentifier(committeeUid) || !MEMBER_BENEFIT_FILTER_SAFE_EMAIL.test(email)) return false;
+    return this.hasCommitteeMemberRow(req, m2mToken, { tags: [`committee_uid:${committeeUid}`], filters_or: [`email:${email}`] });
   }
 
   /**
