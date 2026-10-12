@@ -3878,7 +3878,12 @@ export interface AudienceLastSentEmail {
    * identical shape, and an outage reads as verified precedent for the operator's own selection.
    */
   listsUnavailable?: boolean;
+  subject?: string;
+  /** Why this send is listed — a brand-only row is weaker precedent than one named for the event. */
+  matchReason?: AudienceLastSentMatchReason;
 }
+
+export type AudienceLastSentMatchReason = 'event_name' | 'subject' | 'related_words' | 'brand_only';
 
 /** A master list already built for this event, offered for reuse instead of a rebuild. */
 export interface AudienceMasterListBrief {
@@ -4291,6 +4296,8 @@ export interface AudienceCustomInterpretResult {
   notes: string[];
   /** Existing lists found by name search and ranked by the model; it never adds one. */
   similar: AudienceCustomSimilarList[];
+  /** The event an event audience was planned from; absent for a plain custom request. */
+  event?: AudienceDiscoveredEvent;
 }
 
 export interface AudienceCustomRequest {
@@ -4362,6 +4369,8 @@ export interface AudienceDiscoveryResult {
   lists: AudienceDiscoveredList[];
   /** Signals for which nothing qualified — drives the "not found" section. */
   missingSignals: AudienceSignal[];
+  /** Lists found but never offered for inclusion: suppressions, masters, test and staff lists. */
+  hidden?: number;
 }
 
 export interface AudienceDiscoverRequest {

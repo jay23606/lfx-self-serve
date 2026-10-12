@@ -150,4 +150,14 @@ describe('AudienceCardGridComponent', () => {
       expect(selected).toEqual([]);
     });
   });
+
+  it('never sweeps uncertain lists into Include with Select all', () => {
+    const selected: string[][] = [];
+    fixture.componentInstance.selectAll.subscribe((refs) => selected.push(refs.map((r) => r.listId)));
+    render([bucket('event_registration', [list()]), bucket('uncertain', [list({ listId: '888', name: 'LF Global Opt-Outs', signal: 'uncertain' })])]);
+
+    host().querySelector<HTMLButtonElement>('[data-testid="audience-card-grid-select-all"]')?.click();
+
+    expect(selected).toEqual([['101']]);
+  });
 });

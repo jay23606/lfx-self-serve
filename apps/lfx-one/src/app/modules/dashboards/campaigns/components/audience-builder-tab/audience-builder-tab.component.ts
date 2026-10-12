@@ -244,6 +244,20 @@ export class AudienceBuilderTabComponent {
   protected readonly existingSearchActive = computed(() => this.existingQuery().trim().length > 0);
   protected readonly discoveredLists = signal<readonly AudienceDiscoveredList[]>([]);
   protected readonly missingSignals = signal<readonly AudienceSignal[]>([]);
+  /** Lists discovery found but did not offer for inclusion (suppressions, masters, test lists). */
+  protected readonly hiddenCount = signal(0);
+  /** The event an Event Audience was planned from, for QA when discovery has not run. */
+  protected readonly plannedEvent = signal<AudienceDiscoveredEvent | null>(null);
+  /**
+   * The event QA checks "this edition's registrants" against, with its year: edition names carry
+   * one, and QA cannot run that check on a name without it. Discovery first, then an event plan.
+   */
+  protected readonly qaEventName = computed(() => {
+    const event = this.identity() ?? this.plannedEvent();
+    return event ? withEventYear(event.eventName, event.eventDates) : '';
+  });
+  /** Capabilities have answered; until then the tab is locked but says it is checking. */
+  protected readonly capabilitiesKnown = computed(() => this.capabilities() !== null || this.capabilitiesFailed());
   protected readonly hasDiscovered = signal(false);
   /** The URL the current discovery ran for, so an edited field is compared by what it discovered. */
   private readonly discoveredEventUrl = signal('');
@@ -1453,6 +1467,10 @@ export class AudienceBuilderTabComponent {
 
   // === Protected Methods: custom audiences ===
   /** A list the custom builder created joins Include like any hand-added list. */
+  protected onEventPlanned(event: AudienceDiscoveredEvent): void {
+    this.plannedEvent.set(event);
+  }
+
   protected onCustomCreated(list: AudienceComposedList): void {
     this.add(list.listId, list.name);
     this.ensureSuppressionLoaded();
@@ -1546,14 +1564,16 @@ export class AudienceBuilderTabComponent {
     // The builder lives in the Custom view; switching there is what makes the preset visible.
     this.mode.set('custom');
     const eventName = this.identity()?.eventName ?? '';
+    const editionName = withEventYear(eventName, this.identity()?.eventDates ?? []);
     const brand = this.identity()?.brandShort ?? '';
     const version = ++this.customPresetVersion;
     switch (signal) {
+      // Edition names carry their year, and these filters match the name exactly.
       case 'event_speakers':
-        this.customPreset.set({ version, criteria: { label: eventName, speakers: { scope: 'current', eventNames: eventName ? [eventName] : [] } } });
+        this.customPreset.set({ version, criteria: { label: eventName, speakers: { scope: 'current', eventNames: editionName ? [editionName] : [] } } });
         return;
       case 'event_registration':
-        this.customPreset.set({ version, criteria: { label: eventName, registeredFor: eventName ? [eventName] : [] } });
+        this.customPreset.set({ version, criteria: { label: eventName, registeredFor: editionName ? [editionName] : [] } });
         return;
       case 'project_opt_in':
         this.customPreset.set({
@@ -1855,6 +1875,7 @@ export class AudienceBuilderTabComponent {
         const result = event.data as AudienceDiscoveryResult;
         this.discoveredLists.set(result.lists);
         this.missingSignals.set(result.missingSignals);
+        this.hiddenCount.set(result.hidden ?? 0);
         this.hasDiscovered.set(true);
         this.loadReuseAndSuppression();
         break;
@@ -2273,6 +2294,7 @@ export class AudienceBuilderTabComponent {
     this.identity.set(null);
     this.discoveredLists.set([]);
     this.missingSignals.set([]);
+    this.hiddenCount.set(0);
     this.lastSentEmails.set([]);
     this.existingMasterLists.set([]);
     this.composedMasterLists.set([]);
@@ -2317,4 +2339,14 @@ export class AudienceBuilderTabComponent {
     this.previewError.set(null);
     this.previewing.set(false);
   }
+}
+
+/** Appends the year of the event's first date to a name that has none ("… Japan" → "… Japan 2026"). */
+function withEventYear(name: string, dates: readonly string[]): string {
+  const trimmed = name.trim();
+  if (trimmed === '' || /\b(19|20)\d{2}\b/.test(trimmed)) {
+    return trimmed;
+  }
+  const year = dates.map((d) => /\b(19|20)\d{2}\b/.exec(d)?.[0]).find(Boolean);
+  return year ? `${trimmed} ${year}` : trimmed;
 }

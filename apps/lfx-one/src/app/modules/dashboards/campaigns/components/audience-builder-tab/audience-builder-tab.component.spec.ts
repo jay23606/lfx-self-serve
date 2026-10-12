@@ -2918,4 +2918,49 @@ describe('AudienceBuilderTabComponent', () => {
       expect(host().querySelector('[data-testid="campaigns-audience-suppression-count-value"]')?.textContent).toContain('1,234');
     });
   });
+
+  describe('end-to-end test fixes', () => {
+    async function discover(result: Partial<AudienceDiscoveryResult> = {}): Promise<void> {
+      await render();
+      typeEventUrl('https://events.example.org/synthetic-summit/');
+      click('campaigns-audience-discover');
+      completeDiscovery({ ...discovered(), ...result });
+    }
+
+    it('says how many lists discovery kept out of Include', async () => {
+      await discover({ hidden: 4 });
+
+      expect(host().querySelector('[data-testid="campaigns-audience-hidden-count"]')?.textContent).toContain('4 more list(s)');
+    });
+
+    it('gives QA the edition name, year included, so the current-registrants check runs', async () => {
+      await discover();
+
+      const qa = fixture.debugElement.query(By.css('lfx-audience-qa-panel')).componentInstance as { eventName: () => string };
+      expect(qa.eventName()).toBe('Synthetic Summit 2026');
+    });
+
+    it('gives QA the planned event when no discovery ran', async () => {
+      await render();
+      (fixture.debugElement.query(By.directive(AudienceCustomBuilderComponent)).componentInstance as AudienceCustomBuilderComponent).eventPlanned.emit({
+        eventName: 'AGNTCon + MCPCon Japan',
+        brandShort: 'AAIF',
+        eventDates: ['2026-09-10'],
+      });
+      fixture.detectChanges();
+
+      const qa = fixture.debugElement.query(By.css('lfx-audience-qa-panel')).componentInstance as { eventName: () => string };
+      expect(qa.eventName()).toBe('AGNTCon + MCPCon Japan 2026');
+    });
+
+    it('pre-fills speakers with the edition name, year included', async () => {
+      await discover({ missingSignals: ['event_speakers'] });
+
+      click('audience-missing-signals-create-event_speakers');
+
+      expect(
+        (fixture.debugElement.query(By.directive(AudienceCustomBuilderComponent)).componentInstance as AudienceCustomBuilderComponent).preset()
+      ).toMatchObject({ criteria: { speakers: { eventNames: ['Synthetic Summit 2026'] } } });
+    });
+  });
 });

@@ -78,6 +78,7 @@ interface WireDiscoveryResult {
   lists: WireDiscoveredList[];
   missing_signals: string[];
   inspected?: number;
+  hidden?: number;
 }
 
 interface WireListSearchResult {
@@ -114,6 +115,8 @@ interface WireLastSentEmail {
   included_lists: WireListBrief[];
   suppression_lists: WireListBrief[];
   lists_unavailable?: boolean;
+  subject?: string;
+  match_reason?: string;
 }
 
 interface WireMasterListBrief {
@@ -227,6 +230,7 @@ interface WireCustomInterpretResult {
   questions: { id: string; question: string; why?: string; options: string[] }[];
   notes: string[];
   similar?: { list: WireListSearchResult; recommendation?: string; reason?: string }[];
+  event?: WireEventIdentity;
 }
 
 interface WireCustomPreviewResult {
@@ -631,6 +635,7 @@ export class AudienceBuilderProxyService {
       result: {
         lists: (wire.lists ?? []).map(toDiscoveredList),
         missingSignals: (wire.missing_signals ?? []) as AudienceSignal[],
+        ...(wire.hidden ? { hidden: wire.hidden } : {}),
       },
       inspected: wire.inspected ?? 0,
     };
@@ -675,6 +680,8 @@ export class AudienceBuilderProxyService {
     return (wire.emails ?? []).map((email) => ({
       emailId: email.email_id,
       emailName: email.email_name,
+      subject: email.subject || undefined,
+      matchReason: (['event_name', 'subject', 'related_words', 'brand_only'] as const).find((r) => r === email.match_reason),
       sentAt: email.sent_at ?? '',
       hubspotUrl: httpHref(email.hubspot_url),
       includedLists: (email.included_lists ?? []).map(toListBrief),
@@ -821,6 +828,7 @@ export class AudienceBuilderProxyService {
           recommendation: (['reuse', 'update', 'unrelated'] as const).find((r) => r === s.recommendation),
           reason: s.reason || undefined,
         })),
+      event: wire.event ? { eventName: wire.event.event_name, brandShort: wire.event.brand_short ?? '', eventDates: wire.event.event_dates ?? [] } : undefined,
     };
   }
 

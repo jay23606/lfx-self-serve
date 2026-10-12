@@ -80,7 +80,9 @@ export class AudienceCardGridComponent {
 
   protected onSelectAll(): void {
     if (this.disabled()) return;
+    // "Uncertain" lists need a human look each, so they are never swept in wholesale.
     const refs = this.populated()
+      .filter((bucket) => bucket.signal !== 'uncertain')
       .flatMap((bucket) => bucket.lists)
       .filter((list) => !list.excluded && !list.selected)
       .map((list) => ({ listId: list.listId, name: list.name }));

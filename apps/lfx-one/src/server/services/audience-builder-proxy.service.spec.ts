@@ -484,3 +484,48 @@ describe('AudienceBuilderProxyService custom audiences', () => {
     expect(out.needsDisambiguation === false && out.checks.currentRegistrants?.verdict).toBe('FAIL');
   });
 });
+
+describe('AudienceBuilderProxyService end-to-end test fields', () => {
+  let service: AudienceBuilderProxyService;
+
+  beforeEach(() => {
+    proxyRequest.mockReset();
+    service = new AudienceBuilderProxyService();
+  });
+
+  it("maps the hidden count, and each prior send's subject and match reason", async () => {
+    proxyRequest.mockResolvedValueOnce({ event: { event_name: 'E' }, lists: [], missing_signals: [], hidden: 5 });
+    const discovered = await service.discover(req, 'tlf', 'https://events.example.org/e');
+    expect(discovered.result.hidden).toBe(5);
+
+    proxyRequest.mockResolvedValueOnce({
+      emails: [
+        {
+          email_id: '1',
+          email_name: 'N',
+          hubspot_url: 'https://app.hubspot.com/x',
+          included_lists: [],
+          suppression_lists: [],
+          subject: 'S',
+          match_reason: 'brand_only',
+        },
+      ],
+    });
+    const sent = await service.getLastSent(req, 'tlf', 'E', '', 3);
+    expect(sent[0]).toMatchObject({ subject: 'S', matchReason: 'brand_only' });
+  });
+
+  it('maps the event an event audience was planned from', async () => {
+    proxyRequest.mockResolvedValue({
+      criteria: {},
+      questions: [],
+      notes: [],
+      similar: [],
+      event: { event_name: 'E', brand_short: 'AAIF', event_dates: ['2026-09-10'] },
+    });
+
+    const out = await service.interpretCustom(req, 'tlf', { request: 'x', eventUrl: 'https://events.example.org/e' });
+
+    expect(out.event).toEqual({ eventName: 'E', brandShort: 'AAIF', eventDates: ['2026-09-10'] });
+  });
+});

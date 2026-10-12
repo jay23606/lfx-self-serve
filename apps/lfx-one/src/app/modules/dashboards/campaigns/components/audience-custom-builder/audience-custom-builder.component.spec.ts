@@ -266,4 +266,33 @@ describe('AudienceCustomBuilderComponent', () => {
 
     expect(service.interpret.mock.calls.at(-1)?.[1].eventUrl, 'an answer re-plans from the same page').toBe('https://events.example.org/x');
   });
+
+  it('reports the event an event audience was planned from', () => {
+    const events: string[] = [];
+    fixture.componentInstance.eventPlanned.subscribe((e) => events.push(e.eventName));
+    service.interpret.mockReturnValue(of({ ...interpretation, event: { eventName: 'Synthetic Summit', brandShort: 'SYN', eventDates: ['2026-03-02'] } }));
+
+    interpretSeoul();
+
+    expect(events).toEqual(['Synthetic Summit']);
+  });
+
+  it("keeps each question's free-text answer to itself", () => {
+    service.interpret.mockReturnValue(
+      of({
+        ...interpretation,
+        questions: [
+          { id: 'a', question: 'A?', options: ['x'] },
+          { id: 'b', question: 'B?', options: ['y'] },
+        ],
+      })
+    );
+    interpretSeoul();
+
+    type('audience-custom-builder-other-a', 'only for A');
+
+    expect(el<HTMLInputElement>('audience-custom-builder-other-b').value, 'one shared box answered every question at once').toBe('');
+    click('audience-custom-builder-other-submit-a');
+    expect(service.interpret.mock.calls.at(-1)?.[1].answers).toEqual([{ questionId: 'a', question: 'A?', answer: 'only for A' }]);
+  });
 });

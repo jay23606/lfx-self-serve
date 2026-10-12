@@ -18,6 +18,7 @@ import type {
   AudienceCustomPreview,
   AudienceCustomQuestion,
   AudienceCustomSimilarList,
+  AudienceDiscoveredEvent,
   AudienceListSearchResult,
   AudienceSpeakerScope,
 } from '@lfx-one/shared/interfaces';
@@ -66,6 +67,8 @@ export class AudienceCustomBuilderComponent {
   public readonly created = output<AudienceComposedList>();
   /** An existing list the operator chose to reuse instead of creating one. */
   public readonly reuse = output<AudienceListSearchResult>();
+  /** The event an event audience was planned from, so the tab can QA against it. */
+  public readonly eventPlanned = output<AudienceDiscoveredEvent>();
 
   // === Constants ===
   protected readonly operators = AUDIENCE_CUSTOM_OPERATORS;
@@ -73,7 +76,6 @@ export class AudienceCustomBuilderComponent {
 
   // === Forms ===
   protected readonly requestControl = new FormControl('', { nonNullable: true });
-  protected readonly otherAnswerControl = new FormControl('', { nonNullable: true });
   protected readonly nameControl = new FormControl('', { nonNullable: true });
   protected readonly form = new FormGroup({
     cities: new FormControl('', { nonNullable: true }),
@@ -112,6 +114,8 @@ export class AudienceCustomBuilderComponent {
   /** The education properties the last preview offered; more than one shows a picker. */
   protected readonly topicCandidates = signal<string[]>([]);
   protected readonly answers = signal<AudienceCustomAnswer[]>([]);
+  /** Each question's own free-text answer, keyed by question id — one shared box mixed them up. */
+  protected readonly otherAnswers = signal<Readonly<Partial<Record<string, string>>>>({});
   /** The event page an event-audience preset plans from; kept across answers. */
   protected readonly eventUrl = signal('');
   protected readonly gate = signal<AudienceListSearchResult | null>(null);
@@ -180,7 +184,7 @@ export class AudienceCustomBuilderComponent {
       ...list.filter((a) => a.questionId !== question.id),
       { questionId: question.id, question: question.question, answer: text },
     ]);
-    this.otherAnswerControl.setValue('');
+    this.otherAnswers.update((all) => ({ ...all, [question.id]: '' }));
     this.interpret(this.requestControl.value.trim());
   }
 
@@ -203,6 +207,10 @@ export class AudienceCustomBuilderComponent {
         return 'Probably a different audience';
     }
     return 'Not assessed';
+  }
+
+  protected onOtherInput(questionId: string, value: string): void {
+    this.otherAnswers.update((all) => ({ ...all, [questionId]: value }));
   }
 
   protected onFillByHand(): void {
@@ -343,6 +351,9 @@ export class AudienceCustomBuilderComponent {
           this.questions.set(result.questions);
           this.notes.set(result.notes);
           this.similar.set(result.similar);
+          if (result.event) {
+            this.eventPlanned.emit(result.event);
+          }
           this.gate.set(result.gate ?? null);
           this.resetCriteria(result.criteria);
           if (!this.form.controls.label.value && this.eventName()) {
