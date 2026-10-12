@@ -17,14 +17,14 @@
 import { expect, test } from '@playwright/test';
 
 import { skipWhenAuthMissing } from './helpers/auth.helper';
-import { CHECK_FAILED, CREATED, DATA_LOAD_TIMEOUT, ELIGIBLE, NOT_KEY_CONTACT, openInsightsTokens } from './helpers/insights-tokens.helper';
+import { CHECK_FAILED, CREATED, DATA_LOAD_TIMEOUT, ELIGIBLE, NOT_ENABLED, openInsightsTokens } from './helpers/insights-tokens.helper';
 
 test.beforeEach(() => skipWhenAuthMissing());
 
 test.setTimeout(60_000);
 
 test.describe('LFX Insights API tokens', () => {
-  test('shows the empty state with a create CTA for an eligible Key Contact', async ({ page }) => {
+  test('shows the empty state with a create CTA for a user with access', async ({ page }) => {
     await openInsightsTokens(page, { tokens: [], eligibility: ELIGIBLE });
 
     await expect(page.getByTestId('insights-tokens-empty')).toBeVisible({ timeout: DATA_LOAD_TIMEOUT });
@@ -32,8 +32,8 @@ test.describe('LFX Insights API tokens', () => {
     await expect(page.getByTestId('insights-tokens-lock-notice')).toHaveCount(0);
   });
 
-  test('shows the lock notice and no create CTA for a non-Key-Contact', async ({ page }) => {
-    await openInsightsTokens(page, { tokens: [], eligibility: NOT_KEY_CONTACT });
+  test('shows the lock notice and no create CTA for a user without access', async ({ page }) => {
+    await openInsightsTokens(page, { tokens: [], eligibility: NOT_ENABLED });
 
     await expect(page.getByTestId('insights-tokens-lock-notice')).toBeVisible({ timeout: DATA_LOAD_TIMEOUT });
     await expect(page.getByTestId('insights-tokens-empty')).toHaveCount(0);

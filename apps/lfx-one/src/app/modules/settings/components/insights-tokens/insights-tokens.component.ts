@@ -27,8 +27,8 @@ import { InsightsTokenRevealDialogComponent } from '../insights-token-reveal-dia
 /**
  * LFX Insights API tokens group (IN-1233), rendered inside the Developer Settings API Token card
  * behind the `insights-public-api` flag. Relies on the parent's ConfirmationService, MessageService
- * and DialogService (and its `<p-toast>` / `<p-confirmDialog>`). Key Contacts only: the list loads
- * once eligibility allows it, matching the server gate. Read-only while impersonating: the list and
+ * and DialogService (and its `<p-toast>` / `<p-confirmDialog>`). Flag-enabled users only: the list
+ * loads once eligibility allows it, matching the server gate. Read-only while impersonating: the list and
  * eligibility still load for the impersonated user, but create and revoke are disabled (the server
  * blocks them too).
  */
@@ -67,7 +67,7 @@ export class InsightsTokensComponent {
     this.loading.set(true);
     this.loadError.set(false);
 
-    // Tokens are Key-Contact-only on the server too, so the list is fetched only once eligibility allows it.
+    // The server applies the same access flag, so the list is fetched only once eligibility allows it.
     this.insightsTokensService
       .getEligibility()
       .pipe(

@@ -47,7 +47,7 @@ LFX One is a modern Angular 20 SSR application built with stable zoneless change
 - **[Mentorship Admin BFF](./backend/mentorship-admin.md)** - Admin route map, sub-router, controller and services, shared mappers
 - **[Mentorship Task Writes](./backend/mentorship-tasks.md)** - Task create and edit routes shared by the admin and mentor program details
 - **[Gatewaze Embed Proxy](./backend/gw-proxy.md)** - Wildcard BFF proxy, authorization, header policy, body limits
-- **[LFX Insights API Tokens](./backend/insights-tokens.md)** - PAT service proxy, M2M Key Contact check, fail-closed eligibility
+- **[LFX Insights API Tokens](./backend/insights-tokens.md)** - PAT service proxy, server-side LaunchDarkly access flag
 - **[Error Handling](./backend/error-handling-architecture.md)** - Comprehensive error handling patterns
 
 ### 📦 Shared Package Architecture
