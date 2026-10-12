@@ -1140,8 +1140,9 @@ export interface PublicPastMeetingParticipant {
 }
 
 /**
- * The public past-meeting roster: the identified participants, plus how many attendees could not be
- * matched to anyone (the identity-tier aggregate, N-02), who are counted but never listed.
+ * The public past-meeting roster: the verified identities (invitees, and attendees whose identity is
+ * verified), plus how many attendees are not verified (unknown, needs review, auto-matched or
+ * AI-reconciled: the identity-tier aggregate, N-02), who are counted but never listed.
  */
 export interface PublicPastMeetingRoster {
   participants: PublicPastMeetingParticipant[];

@@ -234,12 +234,22 @@ export function toPublicPastMeetingTranscript(transcript: PastMeetingTranscript)
 }
 
 /**
+ * Whether a past participant may be named on the public roster (N-02 / `meeting-surface-boundary.md`
+ * § Public roster fields): an invitee who did not attend (a registrant, so a known identity), or an
+ * attendee whose identity is verified. Every other attendee (unknown, needs review, auto-matched or
+ * AI-reconciled) is only counted.
+ */
+function isPublicRosterIdentity(participant: PastMeetingParticipant): boolean {
+  return participant.is_attended ? !!participant.is_verified : participant.is_invited;
+}
+
+/**
  * The public roster of a past meeting (`meeting-surface-boundary.md` § Public roster fields): name,
- * avatar, organization and attended / invited for each identified participant, and a count of the
- * attendees who could not be matched to anyone. Never email, job title or committee standing.
+ * avatar, organization and attended / invited for each verified identity, and a count of the
+ * attendees whose identity is not verified. Never email, job title or committee standing.
  */
 export function toPublicPastMeetingRoster(participants: PastMeetingParticipant[]): PublicPastMeetingRoster {
-  const identified = participants.filter((participant) => !participant.is_unknown);
+  const identified = participants.filter(isPublicRosterIdentity);
   return {
     participants: identified.map(({ uid, first_name, last_name, avatar_url, org_name, is_attended, is_invited }) => ({
       uid,
@@ -250,7 +260,7 @@ export function toPublicPastMeetingRoster(participants: PastMeetingParticipant[]
       is_attended,
       is_invited,
     })),
-    unidentified_attendees: participants.length - identified.length,
+    unidentified_attendees: participants.filter((participant) => participant.is_attended && !isPublicRosterIdentity(participant)).length,
   };
 }
 

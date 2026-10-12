@@ -1847,6 +1847,7 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
         committee_voting_status: 'Voting Rep',
         is_attended: true,
         is_invited: true,
+        is_verified: true,
       },
       { uid: 'p2', first_name: 'Zoom', last_name: 'Caller', email: '', is_unknown: true, is_attended: true, is_invited: false },
     ];

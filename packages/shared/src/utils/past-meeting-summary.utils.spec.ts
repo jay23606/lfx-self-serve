@@ -72,7 +72,9 @@ describe('toPublicPastMeetingSummary', () => {
 
     const result = toPublicPastMeetingSummary(summary);
 
-    expect(result.summary_data).toEqual({ ...summary.summary_data, doc_url: '' });
+    // Only the text in effect: the organizer's edit, never the generated text it replaced.
+    expect(result.summary_data).toEqual({ ...summary.summary_data, content: 'Edited', edited_content: '', doc_url: '' });
+    expect(JSON.stringify(result)).not.toContain('Generated');
     expect(result.approved).toBe(true);
     expect(result.password).toBe('');
     expect(result.email_sent).toBe(false);

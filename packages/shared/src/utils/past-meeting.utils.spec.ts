@@ -36,6 +36,9 @@ function participant(partial: Partial<EnrichedPastMeetingParticipant>): Enriched
     is_attended: partial.is_attended ?? false,
     is_invited: partial.is_invited ?? false,
     is_unknown: partial.is_unknown,
+    is_verified: partial.is_verified,
+    is_auto_matched: partial.is_auto_matched,
+    is_ai_reconciled: partial.is_ai_reconciled,
     org_is_member: partial.org_is_member ?? false,
     org_is_project_member: partial.org_is_project_member ?? false,
     avatar_url: partial.avatar_url,
@@ -408,7 +411,7 @@ describe('isPastMeetingArtifactPublic (E4-04)', () => {
 });
 
 describe('toPublicPastMeetingRoster', () => {
-  it('keeps only the public roster fields and counts unidentified attendees', () => {
+  it('keeps only the public roster fields', () => {
     const roster = toPublicPastMeetingRoster([
       participant({
         uid: 'p1',
@@ -418,16 +421,30 @@ describe('toPublicPastMeetingRoster', () => {
         job_title: 'Engineer',
         org_name: 'Acme',
         is_attended: true,
+        is_verified: true,
       }),
-      participant({ uid: 'p2', first_name: 'Unknown', last_name: 'Caller', is_unknown: true, is_attended: true }),
     ]);
 
-    expect(roster.unidentified_attendees).toBe(1);
     expect(roster.participants).toEqual([
       { uid: 'p1', first_name: 'Ada', last_name: 'Lovelace', avatar_url: undefined, org_name: 'Acme', is_attended: true, is_invited: false },
     ]);
     expect(JSON.stringify(roster)).not.toContain('ada@example.com');
     expect(JSON.stringify(roster)).not.toContain('Engineer');
+  });
+
+  // N-02: the public roster names verified identities only; every other attendee tier is counted.
+  it('names invitees and verified attendees, and only counts the other attendee tiers', () => {
+    const roster = toPublicPastMeetingRoster([
+      participant({ uid: 'verified', is_attended: true, is_verified: true }),
+      participant({ uid: 'invitee', is_invited: true }),
+      participant({ uid: 'unknown', is_attended: true, is_unknown: true }),
+      participant({ uid: 'needs-review', is_attended: true }),
+      participant({ uid: 'auto-matched', is_attended: true, is_invited: true, is_auto_matched: true }),
+      participant({ uid: 'ai-reconciled', is_attended: true, is_ai_reconciled: true }),
+    ]);
+
+    expect(roster.participants.map((row) => row.uid)).toEqual(['verified', 'invitee']);
+    expect(roster.unidentified_attendees).toBe(4);
   });
 });
 

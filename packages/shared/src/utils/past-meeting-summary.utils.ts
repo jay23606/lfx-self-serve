@@ -66,7 +66,8 @@ export function getPastMeetingSummaryContent(summary: Pick<PastMeetingSummary, '
 
 /**
  * A summary as the public past-meeting route gives it to a caller with no session (E4-04): an
- * allowlist of the text, title, times and approval flags. Never the Zoom summary document link or
+ * allowlist of the text in effect (the organizer's edit, else the generated text), title, times and
+ * approval flags. Never the Zoom summary document link or
  * its password, the Zoom configuration, the internal email flag, or anything upstream adds later.
  */
 export function toPublicPastMeetingSummary(summary: PastMeetingSummary): PastMeetingSummary {
@@ -82,8 +83,10 @@ export function toPublicPastMeetingSummary(summary: PastMeetingSummary): PastMee
     password: '',
     summary_data: {
       title: data?.title ?? '',
-      content: data?.content ?? '',
-      edited_content: data?.edited_content ?? '',
+      // Only the text in effect: an organizer's edit supersedes the generated text, so what it removed
+      // must not stay readable alongside it.
+      content: getPastMeetingSummaryContent(summary),
+      edited_content: '',
       doc_url: '',
       start_time: data?.start_time ?? '',
       end_time: data?.end_time ?? '',
