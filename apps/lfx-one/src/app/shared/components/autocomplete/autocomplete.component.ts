@@ -7,7 +7,6 @@ import {
   Component,
   computed,
   ContentChild,
-  effect,
   ElementRef,
   inject,
   input,
@@ -17,6 +16,7 @@ import {
   TemplateRef,
   viewChild,
 } from '@angular/core';
+import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { FormGroup, ReactiveFormsModule } from '@angular/forms';
 import { AutoComplete, AutoCompleteCompleteEvent, AutoCompleteModule, AutoCompleteSelectEvent } from 'primeng/autocomplete';
 
@@ -114,13 +114,26 @@ export class AutocompleteComponent {
     // committing the wrong selection on Enter. Resetting the index whenever the array changes
     // forces a fresh arrow-key focus before anything can be committed, closing the race. Mouse
     // click selection is unaffected — PrimeNG binds that path directly to the clicked object.
-    effect(() => {
-      this.suggestions();
-      const instance = this.autoComplete();
-      if (instance?.overlayVisible) {
-        instance.focusedOptionIndex.set(-1);
-      }
-    });
+    // toObservable()+subscribe rather than effect(): this writes a signal owned by the child
+    // AutoComplete instance, and writing into external/child state from an effect risks
+    // ExpressionChangedAfterItHasBeenCheckedError under zoneless change detection (see the same
+    // reasoning in user-search.component.ts).
+    // Respect autoOptionFocus rather than always forcing -1: PrimeNG's own suggestions setter
+    // already recomputes focusedOptionIndex via findFirstFocusedOptionIndex() when autoOptionFocus
+    // is on, but only while its internal `loading` flag is set (i.e. during its own debounced
+    // search cycle). A blanket -1 here would stomp that freshly-computed index whenever this
+    // subscriber's effect flushes after PrimeNG's own synchronous setter logic runs.
+    toObservable(this.suggestions)
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        const instance = this.autoComplete();
+        if (!instance?.overlayVisible) {
+          return;
+        }
+
+        const focusedOptionIndex = this.autoOptionFocus() ? instance.findFirstFocusedOptionIndex() : -1;
+        instance.focusedOptionIndex.set(focusedOptionIndex);
+      });
   }
 
   public searchCompleted(event: AutoCompleteCompleteEvent): void {
