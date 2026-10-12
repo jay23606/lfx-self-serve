@@ -32,6 +32,7 @@ import {
   MENTORSHIP_ADMIN_WITHDRAW_CONFIRM_MESSAGE,
   MENTORSHIP_ALL_OPEN_TERMS_OPTION_LABEL,
   MENTORSHIP_ALL_STATUSES_OPTION_LABEL,
+  MENTORSHIP_APPLICANT_DISPLAY_STATUSES,
   MENTORSHIP_APPLICANT_MINIMIZE_TASKS_LABEL,
   MENTORSHIP_APPLICANT_STATUS_BADGE_CLASSES,
   MENTORSHIP_APPLICANT_STATUS_LABELS,
@@ -41,8 +42,6 @@ import {
   MENTORSHIP_CURRENT_MENTEE_ACTION_LABELS,
   MENTORSHIP_CURRENT_MENTEE_ACTIONS_BY_STATUS,
   MENTORSHIP_IMPERSONATION_READ_ONLY_ERROR_CODE,
-  MENTORSHIP_MENTEE_STATUS_LABELS,
-  MENTORSHIP_MENTEE_STATUSES,
   MENTORSHIP_NOTE_DIALOG_HEADER,
 } from '@lfx-one/shared/constants';
 import {
@@ -50,10 +49,11 @@ import {
   MentorshipAdminApplicationStatusUpdate,
   MentorshipAdminTasksState,
   MentorshipAdminTermOption,
+  MentorshipApplicantDisplayStatus,
+  MentorshipApplicantTask,
   MentorshipCurrentMenteeAction,
   MentorshipAttendanceType,
-  MentorshipMenteeStatus,
-  MentorshipMentorTaskCreateRequest,
+  MentorshipTaskCreateRequest,
   MentorshipProgramApplicant,
   MentorshipRowAction,
   MentorshipTaskFormValue,
@@ -69,6 +69,7 @@ import {
   mentorshipPersonAvatarClass,
   mentorshipPersonInitials,
   mentorshipRowActions,
+  mentorshipTaskSubmittedCount,
 } from '@lfx-one/shared/utils';
 import { MentorshipAdminService } from '@services/mentorship-admin.service';
 import { serverAuthoredMessage } from '@app/shared/utils/http-error.utils';
@@ -79,8 +80,8 @@ import { TooltipModule } from 'primeng/tooltip';
 import { catchError, debounceTime, distinctUntilChanged, map, Observable, of, switchMap, take, tap } from 'rxjs';
 
 import { AdminNoteSaveService } from '../../../../services/admin-note-save.service';
-import { AdminTaskCreateService } from '../../../../services/admin-task-create.service';
 import { MentorshipComingSoonService } from '../../../../services/mentorship-coming-soon.service';
+import { MentorshipTaskCreateService } from '../../../../services/mentorship-task-create.service';
 import { MentorshipTaskDialogService } from '../../../../services/mentorship-task-dialog.service';
 import { ApplicantTasksPanelComponent } from '../../../../components/applicant-tasks-panel/applicant-tasks-panel.component';
 import { MenteeNoteDialogComponent } from '../../../../components/mentee-note-dialog/mentee-note-dialog.component';
@@ -100,7 +101,8 @@ import { RowActionsComponent } from '../../../../components/row-actions/row-acti
  * opens the task form and then creates through the BFF like the other writes, reloading even on a failure, which may
  * still have created the task; an expanded row stays expanded across the reload and re-reads its tasks once, a
  * collapsed row reads none. The form stays shut while another write is in flight, or while a create is still running
- * for the mentee, even one a tab switch outlived. The status export still stubs to coming
+ * for the mentee, even one a tab switch outlived. Editing a task, or setting its status, saves through
+ * the BFF and writes the saved task into the cached list, so no task read follows. The status export still stubs to coming
  * soon. The reviewer note saves through the BFF too and is written into its row, so the table shows it without a
  * read; a later read brings the saved note back, and a read that was already in flight when the save landed keeps
  * the saved note over its older answer.
@@ -132,7 +134,7 @@ export class CurrentMenteesTabComponent {
   private readonly confirmationService = inject(ConfirmationService);
   private readonly messageService = inject(MessageService);
   private readonly noteSave = inject(AdminNoteSaveService);
-  private readonly taskCreate = inject(AdminTaskCreateService);
+  private readonly taskCreate = inject(MentorshipTaskCreateService);
   private readonly destroyRef = inject(DestroyRef);
 
   public readonly programId = input.required<string>();
@@ -152,15 +154,15 @@ export class CurrentMenteesTabComponent {
   protected readonly menteesLoadErrorMessage = MENTORSHIP_ADMIN_MENTEES_LOAD_ERROR_MESSAGE;
   protected readonly tasksLoadErrorMessage = MENTORSHIP_ADMIN_TASKS_LOAD_ERROR_MESSAGE;
 
-  /** Every status an application can hold, sent as the wire `status`. */
-  protected readonly statusOptions: FilterOption<MentorshipMenteeStatus | null>[] = [
+  /** The statuses the table shows, so pending reads as Applied or Tasks Completed; the BFF maps each to the wire `status`. */
+  protected readonly statusOptions: FilterOption<MentorshipApplicantDisplayStatus | null>[] = [
     { label: MENTORSHIP_ALL_STATUSES_OPTION_LABEL, value: null },
-    ...MENTORSHIP_MENTEE_STATUSES.map((status) => ({ label: MENTORSHIP_MENTEE_STATUS_LABELS[status], value: status })),
+    ...MENTORSHIP_APPLICANT_DISPLAY_STATUSES.map((status) => ({ label: MENTORSHIP_APPLICANT_STATUS_LABELS[status], value: status })),
   ];
 
   protected readonly form = new FormGroup({
     search: new FormControl('', { nonNullable: true }),
-    status: new FormControl<MentorshipMenteeStatus | null>(null),
+    status: new FormControl<MentorshipApplicantDisplayStatus | null>(null),
     term: new FormControl<string | null>(null),
   });
 
@@ -177,7 +179,7 @@ export class CurrentMenteesTabComponent {
   protected readonly tasksByApplication = signal<ReadonlyMap<string, MentorshipAdminTasksState>>(new Map());
 
   private readonly search = signal('');
-  private readonly status = signal<MentorshipMenteeStatus | null>(null);
+  private readonly status = signal<MentorshipApplicantDisplayStatus | null>(null);
   private readonly termId = signal<string | null>(null);
   private readonly reloadCount = signal(0);
   /** True while a decision write is in flight; Decline by Term is disabled and a second decision is refused meanwhile. */
@@ -308,6 +310,42 @@ export class CurrentMenteesTabComponent {
 
   protected onRetryTasks(menteeId: string): void {
     this.loadTasks(menteeId);
+  }
+
+  /**
+   * Writes a saved task into its row's cached list, so the row shows it without reading the list again (R4a). Passed to
+   * the panel as a callback, an arrow so it keeps this tab: the panel may be destroyed by a collapse before its save
+   * lands. A row whose tasks were cleared by a reload, or are being read again, has no loaded list to patch, and the
+   * read that fills it brings the saved task.
+   */
+  protected readonly patchSavedTask = (applicationId: string, task: MentorshipApplicantTask): void => {
+    const state = this.tasksByApplication().get(applicationId);
+    if (state?.status !== 'loaded') return;
+    const previous = state.tasks.find((current) => current.id === task.id);
+    this.setTasksState(applicationId, { status: 'loaded', tasks: state.tasks.map((current) => (current.id === task.id ? task : current)) });
+    if (previous) this.shiftSubmittedCount(applicationId, mentorshipTaskSubmittedCount(task.status) - mentorshipTaskSubmittedCount(previous.status));
+    this.reloadIfRowLeftStatusFilter(applicationId);
+  };
+
+  /**
+   * Applied and Tasks Completed filter on task progress, so a status change can move a row out of the results. Reads
+   * the page again when it does, so the row leaves and the total follows; the row stays expanded if upstream still lists it.
+   */
+  private reloadIfRowLeftStatusFilter(applicationId: string): void {
+    const status = this.status();
+    if (this.destroyed || (status !== 'applied' && status !== 'tasks-completed')) return;
+    const row = this.applications().find((application) => application.id === applicationId);
+    if (!row || mentorshipApplicantDisplayStatus(row) === status) return;
+    if (this.expandedTaskMenteeIds()[applicationId]) this.rereadTasksForId = applicationId;
+    this.reloadCount.update((count) => count + 1);
+  }
+
+  /** Keeps the row's submitted count, which Graduate's warning reads, in step with a status change, without reading the page again. */
+  private shiftSubmittedCount(applicationId: string, delta: number): void {
+    if (delta === 0) return;
+    this.applications.update((applications) =>
+      applications.map((row) => (row.id === applicationId ? { ...row, tasksSubmitted: Math.max((row.tasksSubmitted ?? 0) + delta, 0) } : row))
+    );
   }
 
   private loadTasks(applicationId: string): void {
@@ -486,7 +524,7 @@ export class CurrentMenteesTabComponent {
       return;
     }
     this.decisionInFlight.set(true);
-    const request: MentorshipMentorTaskCreateRequest = {
+    const request: MentorshipTaskCreateRequest = {
       applicationIds: [mentee.id],
       name: value.name,
       description: value.description,

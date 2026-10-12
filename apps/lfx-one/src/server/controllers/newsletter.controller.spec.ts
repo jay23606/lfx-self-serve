@@ -3,7 +3,19 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { listNewsletters, createNewsletter, updateNewsletter, scheduleNewsletter, cancelScheduleNewsletter } = vi.hoisted(() => ({
+const {
+  getMyNewsletters,
+  listNewsletters,
+  createNewsletter,
+  updateNewsletter,
+  scheduleNewsletter,
+  cancelScheduleNewsletter,
+  getReadableNewsletter,
+  assertPublisherRead,
+} = vi.hoisted(() => ({
+  assertPublisherRead: vi.fn(),
+  getReadableNewsletter: vi.fn(),
+  getMyNewsletters: vi.fn(),
   listNewsletters: vi.fn(),
   createNewsletter: vi.fn(),
   updateNewsletter: vi.fn(),
@@ -25,6 +37,7 @@ vi.mock('@lfx-one/shared/utils', () => ({ isUuid: vi.fn((v: unknown) => typeof v
 
 vi.mock('../services/newsletter.service', () => ({
   NewsletterService: class {
+    public getMyNewsletters = getMyNewsletters;
     public listNewsletters = listNewsletters;
     public createNewsletter = createNewsletter;
     public updateNewsletter = updateNewsletter;
@@ -33,11 +46,18 @@ vi.mock('../services/newsletter.service', () => ({
   },
 }));
 vi.mock('../services/ai.service', () => ({ AiService: class {} }));
+vi.mock('../services/newsletter-member-benefit.service', () => ({
+  NewsletterMemberBenefitService: class {
+    public getReadableNewsletter = getReadableNewsletter;
+    public assertPublisherRead = assertPublisherRead;
+  },
+}));
 vi.mock('../services/logger.service', () => ({
   logger: { startOperation: vi.fn(() => 0), success: vi.fn(), warning: vi.fn(), error: vi.fn(), debug: vi.fn(), info: vi.fn() },
 }));
 
-import { ServiceValidationError } from '../errors';
+import { MicroserviceError, ServiceValidationError } from '../errors';
+import { logger } from '../services/logger.service';
 import { NewsletterController } from './newsletter.controller';
 
 function buildRes() {
@@ -55,6 +75,63 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe('NewsletterController.getMyNewsletters', () => {
+  it.each(['true', undefined, 'false', 'TRUE', '1', ['true'], { value: 'true' }])('opts in only for literal include_status=%j', async (includeStatus) => {
+    const response = { newsletters: [{ id: 'n1', project_uid: 'p1', subject: 'Synthetic issue' }], complete: false };
+    getMyNewsletters.mockResolvedValue(response);
+    const req = { query: { include_status: includeStatus } } as any;
+    const res = buildRes();
+    const next = vi.fn();
+    await new NewsletterController().getMyNewsletters(req, res, next);
+    expect(res.json).toHaveBeenCalledWith(includeStatus === 'true' ? response : response.newsletters);
+    expect(logger.success).toHaveBeenCalledWith(req, 'get_my_newsletters', 0, { count: 1, complete: false });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each([new Error('discovery failed'), new MicroserviceError('expired', 401, 'UNAUTHORIZED')])(
+    'propagates discovery/auth failures without serializing or duplicate logging',
+    async (error) => {
+      getMyNewsletters.mockRejectedValue(error);
+      const res = buildRes();
+      const next = vi.fn();
+      await new NewsletterController().getMyNewsletters({ query: { include_status: 'true' } } as any, res, next);
+      expect(next).toHaveBeenCalledExactlyOnceWith(error);
+      expect(res.json).not.toHaveBeenCalled();
+      expect(logger.success).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe('NewsletterController.getNewsletter — reader ladder (#3469)', () => {
+  const PROJECT_UID = '11111111-1111-4111-8111-111111111111';
+  const NEWSLETTER_UID = '22222222-2222-4222-8222-222222222222';
+
+  it('returns the issue only through the member-benefit ladder', async () => {
+    const newsletter = { id: NEWSLETTER_UID, version: 1 };
+    getReadableNewsletter.mockResolvedValue(newsletter);
+    const res = buildRes();
+    const next = vi.fn();
+
+    await new NewsletterController().getNewsletter({ params: { projectUid: PROJECT_UID, newsletterUid: NEWSLETTER_UID }, path: '/' } as any, res, next);
+
+    expect(getReadableNewsletter).toHaveBeenCalledWith(expect.anything(), PROJECT_UID, NEWSLETTER_UID);
+    expect(res.json).toHaveBeenCalledWith(newsletter);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('passes a members-only refusal to the error handler instead of the issue', async () => {
+    getReadableNewsletter.mockRejectedValue(Object.assign(new Error('members only'), { statusCode: 403, code: 'NEWSLETTER_MEMBERS_ONLY' }));
+    const res = buildRes();
+    const next = vi.fn();
+
+    await new NewsletterController().getNewsletter({ params: { projectUid: PROJECT_UID, newsletterUid: NEWSLETTER_UID }, path: '/' } as any, res, next);
+
+    expect(res.json).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
+  });
+});
+
 describe('NewsletterController.listNewsletters — status allowlist', () => {
   it.each(['draft', 'sending', 'scheduled', 'sent'])('accepts status=%s', async (status) => {
     listNewsletters.mockResolvedValue({ newsletters: [], next_page_token: undefined });
@@ -66,6 +143,16 @@ describe('NewsletterController.listNewsletters — status allowlist', () => {
     expect(next).not.toHaveBeenCalled();
     expect(listNewsletters).toHaveBeenCalledWith(expect.anything(), 'p1', { status, page_token: undefined });
     expect(res.json).toHaveBeenCalled();
+  });
+
+  it('refuses non-publishers before proxying the body-carrying list (#3469)', async () => {
+    assertPublisherRead.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { statusCode: 403, code: 'NEWSLETTER_LIST_FORBIDDEN' }));
+    const next = vi.fn();
+
+    await new NewsletterController().listNewsletters({ params: { projectUid: 'p1' }, query: {}, path: '/x' } as any, buildRes(), next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403 }));
+    expect(listNewsletters).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown status value', async () => {

@@ -3,6 +3,7 @@
 
 import { DatePipe } from '@angular/common';
 import { Component, computed, input, output } from '@angular/core';
+import { AUDIENCE_ATTACH_MAX_LIST_IDS } from '@lfx-one/shared/constants';
 
 import type { AudienceLastSentEmail, AudienceListBrief, AudienceListRef, AudienceMasterListBrief } from '@lfx-one/shared/interfaces';
 
@@ -117,6 +118,12 @@ export class AudienceLastSentComponent {
    * without a master. A prior send is "the same lists" only when its whole include set matches.
    */
   public readonly attachedIncludeIds = input<readonly string[]>([]);
+  /**
+   * The exclusions an attach made NOW would send beside a past send's own: the step-3 ticks and
+   * every list marked Exclude. A row reads as already attached only when the recorded exclusions
+   * equal these plus the send's own, so a newly ticked suppression can still be recorded.
+   */
+  public readonly pendingExclusionIds = input<readonly string[]>([]);
 
   // === Outputs ===
   /** Add one of a past send's lists to the inclusion set. */
@@ -183,11 +190,16 @@ export class AudienceLastSentComponent {
       const accountedFor = email.includedLists.length;
       const blocked = this.attachBlockedReason(email);
       // Compared as SETS: order is the portal's, not the operator's, and a different order is
-      // the same selection. The includes must match exactly; the send's suppressions need only be
-      // CONTAINED in what was recorded, because reusing a send also applies the exclusions ticked
-      // here (the mandatory suppressions among them) on top of the send's own.
+      // the same selection. The includes must match exactly, and so must the exclusions: an attach
+      // now would send the send's own suppressions plus everything ticked or excluded here, so a
+      // recorded set that is merely a superset or subset of that kept "Use these lists" disabled
+      // after the ticks changed, with no way to record the new ones.
       const sameIncludes = usable.length > 0 && usable.length === attachedIncludes.size && usable.every((list) => attachedIncludes.has(list.listId));
-      const exclusionsCovered = email.suppressionLists.every((list) => recordedExclusions.has(list.listId));
+      const includeIds = new Set(usable.map((list) => list.listId));
+      const expectedExclusions = new Set(
+        [...email.suppressionLists.map((list) => list.listId), ...this.pendingExclusionIds()].filter((id) => !includeIds.has(id))
+      );
+      const exclusionsCovered = expectedExclusions.size === recordedExclusions.size && [...expectedExclusions].every((id) => recordedExclusions.has(id));
       return {
         ...email,
         includedLists: email.includedLists.map(decorate),
@@ -268,6 +280,20 @@ export class AudienceLastSentComponent {
     }
     if (email.suppressionLists.some((list) => list.missing)) {
       return 'A suppression list this send used no longer resolves. Copy the selection and review suppression instead.';
+    }
+    // The BFF refuses more than AUDIENCE_ATTACH_MAX_LIST_IDS ids per array, while campaign-service
+    // can record a send with up to 200 include lists; reusing such a send always ended in a 400.
+    // The exclusions counted are what the attach actually POSTS: the send's own suppressions plus
+    // every current tick and Exclude mark (`pendingExclusionIds`). A list on BOTH sides is not
+    // subtracted: the attach refuses that overlap outright (it would drop an exclusion the operator
+    // chose), so the row is blocked for it here rather than offered and then refused.
+    const includeIds = new Set(usable.map((list) => list.listId));
+    const sentExclusions = new Set([...email.suppressionLists.map((list) => list.listId), ...this.pendingExclusionIds()]);
+    if ([...sentExclusions].some((id) => includeIds.has(id))) {
+      return 'A list this send went to is also excluded here. Remove that exclusion, or copy the selection and review it instead.';
+    }
+    if (usable.length > AUDIENCE_ATTACH_MAX_LIST_IDS || sentExclusions.size > AUDIENCE_ATTACH_MAX_LIST_IDS) {
+      return `This send's lists, with the exclusions ticked here, come to more than ${AUDIENCE_ATTACH_MAX_LIST_IDS} on one side, more than one attach can carry. Copy the selection and narrow it instead.`;
     }
     return null;
   }

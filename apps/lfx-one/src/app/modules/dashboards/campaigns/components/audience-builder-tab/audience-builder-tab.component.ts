@@ -3,13 +3,19 @@
 
 import { HttpErrorResponse } from '@angular/common/http';
 import { Component, computed, DestroyRef, inject, input, output, signal } from '@angular/core';
-import { takeUntilDestroyed, toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { outputFromObservable, takeUntilDestroyed, toObservable, toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { CampaignService } from '@services/campaign.service';
 import { serverAuthoredMessage } from '@shared/utils/http-error.utils';
-import { catchError, combineLatest, distinctUntilChanged, filter, map, of, pairwise, startWith, switchMap, tap } from 'rxjs';
+import { catchError, combineLatest, distinctUntilChanged, filter, finalize, map, of, pairwise, startWith, switchMap, tap } from 'rxjs';
 
-import { AUDIENCE_SIGNAL_INFO, AUDIENCE_SIGNAL_ORDER, AUDIENCE_UNION_EXACT_CAP } from '@lfx-one/shared/constants';
+import {
+  AUDIENCE_ATTACH_MAX_LIST_IDS,
+  AUDIENCE_INCLUSION_SUMMARY_MAX_LENGTH,
+  AUDIENCE_SIGNAL_INFO,
+  AUDIENCE_SIGNAL_ORDER,
+  AUDIENCE_UNION_EXACT_CAP,
+} from '@lfx-one/shared/constants';
 import type {
   AudienceAttachExistingRequest,
   AudienceAttachExistingResult,
@@ -81,6 +87,14 @@ export class AudienceBuilderTabComponent {
   /** Seeded from the brief's event details when it has them, so the field is rarely empty. */
   public readonly initialEventUrl = input('');
   /**
+   * The identity of the event the parent's brief is for (slug, then name, then URL), normalized.
+   *
+   * The advertised URL alone could not tell events apart: two briefs with no registration URL, or two
+   * events sharing one, looked identical, so event A's lists survived into event B's brief. Falls
+   * back to the URL when the parent passes no key.
+   */
+  public readonly eventKey = input('');
+  /**
    * The brief a composed master should be attached to, empty when there is none yet.
    *
    * Empty does NOT disable compose, and that is deliberate rather than an omission. These routes
@@ -134,14 +148,25 @@ export class AudienceBuilderTabComponent {
    */
   public readonly audienceScope = input(0);
   /**
+   * The parent is STAGING a send, or its last stage is unresolved (a draft may still be created) --
+   * either way a HubSpot draft may resolve this brief's audience.
+   *
+   * The other half of `audienceWriteInFlight`. Stage waits for an audience write, and this makes the
+   * exclusion two-way: a compose or attach started while the create is on the wire could change
+   * which audience that draft resolves to, and the create carries only the brief id.
+   */
+  public readonly stagingInFlight = input(false);
+  /**
    * Why `briefId` is empty, when it is.
    *
    * The parent saves the brief on its own as this tab opens, so an empty id almost never means
-   * "the plan was not saved". It means the save is still running, failed, or produced a brief that
-   * is not approved. Telling the operator to save the plan on the Plan tab sent them to a step they
+   * "the plan was not saved". It means the save is still running, failed, produced a brief that
+   * is not approved, or found a brief this session does not own (`'unopened'`). Telling the operator to save the plan on the Plan tab sent them to a step they
    * had already done, with no way to recover.
    */
   public readonly briefState = input<AudienceBriefState>('none');
+  /** The parent's conflict-specific recovery for a failed save; replaces the generic failure copy. */
+  public readonly briefSaveMessage = input('');
 
   // === Outputs ===
   /**
@@ -169,6 +194,16 @@ export class AudienceBuilderTabComponent {
   public readonly continueToEmail = output<void>();
   /** Re-read the brief's saved audience after a read that failed or could not run. */
   public readonly retryAudienceRead = output<void>();
+  /**
+   * Whether a write to the brief's send audience (compose or attach) is on the wire.
+   *
+   * The parent gates staging on it. `canStageEmail` read only the recorded audience, so during a
+   * re-attach or a replacement compose Stage stayed enabled on the OLD audience -- and the draft it
+   * cloned pointed at a list the operator was in the middle of replacing.
+   */
+  public readonly audienceWriteInFlight = outputFromObservable(
+    toObservable(computed(() => this.composeOnWire() || this.attachInFlight())).pipe(distinctUntilChanged())
+  );
   /** Save the brief again after the save the parent started on its own failed. */
   public readonly retryBrief = output<void>();
 
@@ -187,6 +222,8 @@ export class AudienceBuilderTabComponent {
   protected readonly discoveredLists = signal<readonly AudienceDiscoveredList[]>([]);
   protected readonly missingSignals = signal<readonly AudienceSignal[]>([]);
   protected readonly hasDiscovered = signal(false);
+  /** The URL the current discovery ran for, so an edited field is compared by what it discovered. */
+  private readonly discoveredEventUrl = signal('');
 
   // === State: reuse ===
   protected readonly reuseLoading = signal(false);
@@ -325,7 +362,6 @@ export class AudienceBuilderTabComponent {
    */
   private readonly lastWriteWasAttach = signal<boolean>(false);
   protected readonly attachError = signal<string | null>(null);
-  /** The brief a compose was dispatched with, so its `recorded` result is not read as another brief's. */
   /**
    * An attach is on the wire, from dispatch until its reply SETTLES -- whatever brief is on screen.
    *
@@ -334,8 +370,22 @@ export class AudienceBuilderTabComponent {
    * request was still running: switch A -> B -> A and a second attach for A could start, and if its
    * reply landed first the older one then overwrote the record with the earlier selection. Writes
    * are serialized on this instead, so there is never a second reply to arrive out of order.
+   *
+   * Released ONLY when the request settles (a `finalize` on the request itself), never by a reset:
+   * a reset discards the reply, but the request is still being recorded upstream, and releasing
+   * early let a context switch A -> B -> A start a second write against the first.
    */
-  private readonly attachInFlight = signal(false);
+  protected readonly attachInFlight = signal(false);
+  /**
+   * A compose request is on the wire, from dispatch until it settles -- unlike `composing`, which a
+   * reset clears so the new context's UI is not stuck on a spinner.
+   *
+   * The HubSpot lists are still being created after a reset abandons the reply, so writes and
+   * staging are held on THIS. Releasing the hold with `composing` let Stage unlock mid-compose and
+   * clone a draft against the audience that compose was about to replace.
+   */
+  protected readonly composeOnWire = signal(false);
+  /** The brief a compose was dispatched with, so its `recorded` result is not read as another brief's. */
   protected readonly composeBriefId = signal('');
   /** The parent's `audienceScope` at the last compose's dispatch -- which SEND it belonged to. */
   private readonly composeScope = signal(0);
@@ -563,7 +613,14 @@ export class AudienceBuilderTabComponent {
    * and the second write is a real HubSpot record either way.
    */
   protected readonly canAttach = computed(
-    () => this.briefId() !== '' && !this.degraded() && !this.audienceUnknown() && !this.composing() && !this.attachInFlight()
+    () =>
+      this.briefId() !== '' &&
+      !this.degraded() &&
+      !this.audienceUnknown() &&
+      !this.stagingInFlight() &&
+      !this.composing() &&
+      !this.composeOnWire() &&
+      !this.attachInFlight()
   );
 
   /**
@@ -851,7 +908,30 @@ export class AudienceBuilderTabComponent {
    * exclusions this attach records are the ones ticked from that fetch, so attaching while it is in
    * flight or failed records a send with no GDPR/CASL suppression.
    */
-  protected readonly canUseSelectionDirectly = computed(() => this.canUseExistingMaster() && this.inclusion().size > 0);
+  protected readonly canUseSelectionDirectly = computed(() => this.canUseExistingMaster() && this.inclusion().size > 0 && this.listLimitMessage() === '');
+
+  /**
+   * Why direct use is off when the only obstacle is the selection's size; '' otherwise. The BFF
+   * refuses more than AUDIENCE_ATTACH_MAX_LIST_IDS include ids, so offering the action past that
+   * only produced a failed attach.
+   */
+  protected readonly directUseLimitMessage = computed(() => this.listLimitMessage());
+
+  /**
+   * Why a compose or a direct attach of the current selection would be refused by the BFF's
+   * per-request cap: more than AUDIENCE_ATTACH_MAX_LIST_IDS lists selected, or excluded. '' when
+   * within it. Both actions send these arrays, so both are gated on it; telling the operator to
+   * compose instead steered them into a compose that failed the same way and then locked.
+   */
+  protected readonly listLimitMessage = computed(() => {
+    if (this.inclusion().size > AUDIENCE_ATTACH_MAX_LIST_IDS) {
+      return `Select at most ${AUDIENCE_ATTACH_MAX_LIST_IDS} lists. One request can carry at most ${AUDIENCE_ATTACH_MAX_LIST_IDS}.`;
+    }
+    if (this.excludeIds().length > AUDIENCE_ATTACH_MAX_LIST_IDS) {
+      return `Exclude at most ${AUDIENCE_ATTACH_MAX_LIST_IDS} lists. One request can carry at most ${AUDIENCE_ATTACH_MAX_LIST_IDS}.`;
+    }
+    return '';
+  });
 
   /**
    * Why "Use for this email" cannot run, in the operator's terms. Empty when it can.
@@ -863,8 +943,21 @@ export class AudienceBuilderTabComponent {
     if (this.briefId() === '') {
       return this.briefStateMessage();
     }
-    if (this.suppressionMissing() && !this.suppressionLoading()) {
-      return 'Select at least one suppression list in step 3 first. Every send must keep at least one suppression list.';
+    if (this.suppressionLoading()) {
+      return 'The suppression lists are still loading in step 3.';
+    }
+    if (this.suppressionFailed()) {
+      return 'The suppression lists in step 3 could not be loaded. Reload them before attaching.';
+    }
+    if (this.suppressionMissing()) {
+      // Nothing to tick is a different problem from nothing ticked: telling the operator to select a
+      // list when none resolves in this portal gave them an instruction they could not follow.
+      return this.suppressionLists().some((list) => list.listId !== '')
+        ? 'Select at least one suppression list in step 3 first. Every send must keep at least one suppression list.'
+        : 'No suppression list resolves in this HubSpot portal, and every send must keep at least one. Ask a HubSpot admin to create the hygiene lists.';
+    }
+    if (this.conflictingIds().length > 0) {
+      return 'A list is ticked both to send to and to suppress. Untick one side first.';
     }
     return '';
   });
@@ -879,7 +972,9 @@ export class AudienceBuilderTabComponent {
       case 'unopened':
         return 'This email already has a saved plan from an earlier session that was not opened here, so it was not saved over. Open it from the Plan tab: pick this email type, then re-enter the event URL to restore it. Lists can be attached once it is loaded.';
       case 'failed':
-        return 'Saving the plan for this email failed, so there is nothing to attach lists to yet. Use Retry at the top of this tab.';
+        return (
+          this.briefSaveMessage() || 'Saving the plan for this email failed, so there is nothing to attach lists to yet. Use Retry at the top of this tab.'
+        );
       default:
         return 'This email has no saved plan yet. Fill in the Plan tab and continue to save it, then come back to attach lists.';
     }
@@ -912,7 +1007,11 @@ export class AudienceBuilderTabComponent {
       // The other half of the serialization above: an attach in flight is a write to this same
       // brief's audience, and the later reply would decide the record. `attachInFlight`, not the
       // spinner: the spinner is cleared on a brief switch while the request is still running.
+      // Likewise a compose a reset abandoned is still being created upstream.
       !this.attachInFlight() &&
+      !this.composeOnWire() &&
+      // Not while the parent is staging a send against this brief's audience.
+      !this.stagingInFlight() &&
       !this.suppressionFailed() &&
       !this.suppressionLoading() &&
       !this.composeAttempted() &&
@@ -924,10 +1023,18 @@ export class AudienceBuilderTabComponent {
       this.conflictingIds().length === 0 &&
       // At least one suppression list, always. See `suppressionMissing`.
       !this.suppressionMissing() &&
+      // Within the BFF's per-request cap, or the compose is refused and then locks. See `listLimitMessage`.
+      this.listLimitMessage() === '' &&
       this.inclusion().size > 0
   );
 
   public constructor() {
+    // The last NON-empty event key (see `eventKey`); used by the reset below. Declared here
+    // because a project switch must clear it too: carried over, project A's last event made a
+    // brief for project B's event read as a CHANGE, wiping work the operator started by hand in B.
+    let lastEventKey = '';
+    let lastAdvertisedUrl = '';
+
     // A project switch must drop the previous portal's audience state, not just refetch
     // capabilities. The campaigns component stays mounted across `activeFoundationSlug`
     // changes, so discovered lists, ticks, preview counts and compose banners all survived —
@@ -939,17 +1046,14 @@ export class AudienceBuilderTabComponent {
     toObservable(this.projectSlug)
       .pipe(distinctUntilChanged(), pairwise(), takeUntilDestroyed(this.destroyRef))
       .subscribe(([previousProject]) => {
-        // A compose in flight is not cancelled by the reset — the HubSpot lists are already
-        // being created — and its reply is about to be discarded by the run-generation guard.
-        // The reset itself is still correct: showing project A's discovery under project B is
-        // its own defect. So reset, and tell the operator the create was left unconfirmed,
-        // because losing that silently is how a duplicate gets composed later.
-        const wasComposing = this.composing();
-        this.resetRunState();
-        if (wasComposing) {
-          this.composeStranded.set(true);
-          this.strandedProject.set(previousProject);
-        }
+        this.resetForNewContext(previousProject);
+        // Cleared: the parent keeps its brief across a foundation switch, but that brief is the OLD
+        // project's event, so remembering its key compared the new project's first brief against it
+        // and wiped work discovered here for that very event. Work in the new project is exploratory
+        // until its first brief arrives, and the first-brief rule keeps it only when it was discovered
+        // for the URL that brief advertises -- a brief with no URL, or another URL, starts over.
+        lastEventKey = '';
+        lastAdvertisedUrl = '';
         this.capabilitiesFailed.set(false);
         // reset(), not setValue(''): the dirty flag is project-scoped state too. setValue leaves
         // the control dirty, and the `initialEventUrl` seed below only fires while it is pristine
@@ -978,6 +1082,69 @@ export class AudienceBuilderTabComponent {
         }
       });
 
+    // A DIFFERENT event's brief arriving under this mounted panel starts it over, as a project
+    // switch does. The parent hands Plan's next event to the same component, and the `briefId`
+    // reset above clears only the attach state -- so event A's discovery, ticks and identity
+    // survived, and a compose then sent A's lists (and A's event name into the list names) with
+    // B's brief id. The same event re-proceeded, or another email stage for it, keeps the operator's
+    // selection (how the event is identified is below).
+    //
+    // An EMPTY URL means "no brief right now", not "a different event", so it is skipped and the
+    // comparison is against the last NON-empty one. Every stage change and every return to Plan
+    // clears the brief first, so a plain previous/next pair saw A -> '' and wiped the same event's
+    // work. From no event at all is not a change either: a brief arriving for an exploratory
+    // session the operator started by hand is the same work.
+    //
+    // A discovery still STREAMING counts as work too: `hasDiscovered` turns true only on the final
+    // frame, while `identity` and the lists land earlier, so B's brief arriving mid-stream let A's
+    // frames finish under it.
+    //
+    // The work's event is the URL it was DISCOVERED for when the operator edited the field, and the
+    // advertised URL only while it is pristine. Comparing advertised URLs alone missed an edit:
+    // advertised A, discovered B by hand, A handed back -- "A -> A" -- and B's lists were composed
+    // with A's brief.
+    //
+    // The EVENT is identified by `eventKey` (slug, then name, then URL), not by URL alone: two events
+    // with no registration URL, or sharing one, otherwise looked identical.
+    //
+    // FAIL-SAFE where these disagree: a different event KEY always starts over, even when the
+    // operator had discovered the incoming event's URL by hand. Two events can share a URL, and the
+    // cost of a wrong guess is A's lists composed with B's brief; the cost of the reset is re-running
+    // a discovery. Within the same key, a corrected advertised URL, or edited work discovered for a
+    // different URL, also starts over. Only the FIRST brief after exploratory work keeps it, when
+    // that work was discovered for the URL the brief advertises.
+    toObservable(computed(() => ({ key: this.eventKey().trim().toLowerCase() || this.initialEventUrl(), url: this.initialEventUrl() })))
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(({ key: nextKey, url: advertised }) => {
+        if (nextKey === '') {
+          return;
+        }
+        const previousKey = lastEventKey;
+        const previousUrl = lastAdvertisedUrl;
+        lastEventKey = nextKey;
+        lastAdvertisedUrl = advertised;
+        const differentEvent = this.isDifferentEvent(previousKey, nextKey, previousUrl, advertised);
+        if (!(this.hasDiscovered() || this.discovering())) {
+          // No discovery yet, but a TYPED URL is work too: the seed below never overwrites a dirty
+          // field, so a URL typed for event B survived into event C's brief and the next discovery
+          // composed B's lists with C's brief id. Reseed it; nothing else exists to reset.
+          // Only for a different EVENT: a later update to the same event's brief must not clobber
+          // what the operator typed over the seed. For the FIRST brief (no key yet -- a first visit,
+          // or just after a foundation switch) the first-brief rule decides: a typed URL is kept
+          // only when that brief advertises it, the same rule discovered work is held to.
+          const reseed = previousKey !== '' ? previousKey !== nextKey : differentEvent;
+          if (reseed && this.eventUrlControl.dirty) {
+            this.eventUrlControl.reset(advertised, { emitEvent: false });
+          }
+          return;
+        }
+        if (!differentEvent) {
+          return;
+        }
+        this.resetForNewContext(this.projectSlug());
+        this.eventUrlControl.reset(advertised, { emitEvent: false });
+      });
+
     // Disabling a reactive control has to go through the control, not a `[disabled]` binding on the
     // input: the binding fights the directive and Angular warns it can produce a
     // changed-after-checked error. Every other action here is a plain button, so this is the only
@@ -994,15 +1161,26 @@ export class AudienceBuilderTabComponent {
   }
 
   // === Protected Methods: discovery ===
-  /** The only way the stranded-compose warning clears: an explicit acknowledgement. */
+  /**
+   * The only way the stranded-compose warning clears: an explicit acknowledgement -- and only once
+   * the abandoned request has SETTLED. While it is still on the wire the lists may not exist yet,
+   * so "I have checked HubSpot" could be answered truthfully and then be wrong a moment later, and
+   * clearing the marker re-permitted a compose that duplicates them.
+   */
   protected onDismissStranded(): void {
+    if (this.composeOnWire()) {
+      return;
+    }
     this.composeStranded.set(false);
     this.strandedProject.set('');
   }
 
   protected onDiscover(): void {
     const eventUrl = this.eventUrlControl.value.trim();
-    if (this.degraded() || this.discovering() || eventUrl.length === 0) {
+    // Not while an attach is on the wire, either. Discovery resets the run, which discards that
+    // attach's reply -- so its outcome, success or error, would never be shown for the brief it was
+    // recorded against.
+    if (this.degraded() || this.discovering() || this.attachInFlight() || eventUrl.length === 0) {
       return;
     }
     // Refused HERE rather than re-locking after the reset. `composeAttempted` is the
@@ -1021,6 +1199,7 @@ export class AudienceBuilderTabComponent {
     // appeared and the Discover button stayed live, letting a second click launch an
     // overlapping SSE request against the same panel.
     this.resetRunState();
+    this.discoveredEventUrl.set(eventUrl);
     this.discovering.set(true);
     this.discoveryError.set(null);
     this.progressMessage.set('Starting discovery...');
@@ -1196,7 +1375,9 @@ export class AudienceBuilderTabComponent {
     }
     const entries = this.inclusionEntries();
     const names = entries.map((entry) => entry.name);
-    const summary = entries.length === 1 ? '' : `${entries.length} lists: ${names.join(', ')}`;
+    // Bounded to what the BFF stores: a long run of list names otherwise failed the whole attach.
+    const full = entries.length === 1 ? '' : `${entries.length} lists: ${names.join(', ')}`;
+    const summary = full.length > AUDIENCE_INCLUSION_SUMMARY_MAX_LENGTH ? `${full.slice(0, AUDIENCE_INCLUSION_SUMMARY_MAX_LENGTH - 1)}…` : full;
     this.attachExisting(
       'selection',
       entries.map((entry) => entry.listId),
@@ -1315,6 +1496,7 @@ export class AudienceBuilderTabComponent {
 
     const event = this.identity();
     this.composing.set(true);
+    this.composeOnWire.set(true);
     this.composeAttempted.set(true);
     this.composedEventUrl.set(this.eventUrlControl.value.trim());
     const run = this.runGeneration;
@@ -1330,7 +1512,7 @@ export class AudienceBuilderTabComponent {
     const unattached = (master: AudienceComposedList): void => {
       this.looseComposedMaster.set(master);
       this.rememberComposedMaster(master);
-      this.audienceComposeUnattached.emit({ master, briefId: dispatchBriefId, projectSlug: dispatchProject, scope: dispatchScope });
+      this.reportUnattached(master, dispatchBriefId, dispatchProject, dispatchScope);
     };
 
     this.campaignService
@@ -1347,10 +1529,26 @@ export class AudienceBuilderTabComponent {
         // actually happened.
         briefId: dispatchBriefId || undefined,
       })
-      .pipe(takeUntilDestroyed(this.destroyRef))
+      // Released when the REQUEST settles, whatever the run generation says about its reply.
+      .pipe(
+        finalize(() => this.composeOnWire.set(false)),
+        takeUntilDestroyed(this.destroyRef)
+      )
       .subscribe({
         next: (result) => {
+          // A stale reply is still REPORTED to the parent when the project is unchanged: recorded, so
+          // the parent shows what upstream now resolves; or unrecorded, so its per-brief "unattached
+          // list" warning is filed -- the operator's only route back to a real, billed list. Both are
+          // scoped by the dispatch, not by what is on screen. It is not added to THIS run's reuse
+          // grid, which now belongs to another event.
           if (run !== this.runGeneration) {
+            if (dispatchProject === this.projectSlug()) {
+              if (result.recorded && result.audience) {
+                this.audienceAttached.emit(result.audience);
+              } else {
+                this.reportUnattached(result.master, dispatchBriefId, dispatchProject, dispatchScope);
+              }
+            }
             return;
           }
           this.composeResult.set(result);
@@ -1358,9 +1556,8 @@ export class AudienceBuilderTabComponent {
           this.lastWriteWasAttach.set(false);
           this.composing.set(false);
 
-          // Emitted INSIDE the staleness guard above, and it has to be: an emission after the run
-          // advanced would attach this project's master list to whatever brief the parent holds
-          // now, which on a project switch is a different project's send entirely.
+          // Both this emission and the stale one above rely on the parent's `onAudienceComposed`,
+          // which accepts a row only when `audience.briefId` is the brief it is addressing now.
           if (result.recorded && result.audience) {
             this.audienceAttached.emit(result.audience);
           } else {
@@ -1372,6 +1569,11 @@ export class AudienceBuilderTabComponent {
         },
         error: (httpErr: HttpErrorResponse) => {
           if (run !== this.runGeneration) {
+            // A stale partial whose master IS confirmed is still a real list: file its warning.
+            const stalePartial = httpErr.status === 502 ? this.asComposePartialBody(httpErr.error) : null;
+            if (stalePartial?.master && dispatchProject === this.projectSlug()) {
+              this.reportUnattached(stalePartial.master, dispatchBriefId, dispatchProject, dispatchScope);
+            }
             return;
           }
           // A 502 alone does not make this a partial compose. An ordinary gateway or network
@@ -1623,35 +1825,59 @@ export class AudienceBuilderTabComponent {
       return;
     }
     const includeSet = new Set(includes);
-    const sentExclusions = [...new Set([...extraExclusions, ...this.excludeIds()])].filter((id) => !includeSet.has(id));
+    const requestedExclusions = [...new Set([...extraExclusions, ...this.excludeIds()])];
+    // REFUSED, not filtered: dropping an exclusion that is also being sent to recorded a send that
+    // reaches contacts the operator marked for exclusion -- a reused master marked Exclude, or a past
+    // send's list now ticked for suppression. The tab's own conflict gate only sees the step-6
+    // selection, not the lists an attach brings in, so the overlap is checked here too.
+    const conflicting = requestedExclusions.filter((id) => includeSet.has(id));
+    if (conflicting.length > 0) {
+      this.attachError.set(
+        `${conflicting.length === 1 ? 'A list is' : `${conflicting.length} lists are`} both sent to and excluded by this attach. Remove the exclusion or choose different lists.`
+      );
+      return;
+    }
+    const sentExclusions = requestedExclusions;
+    if (sentExclusions.length > AUDIENCE_ATTACH_MAX_LIST_IDS) {
+      this.attachError.set(`At most ${AUDIENCE_ATTACH_MAX_LIST_IDS} lists can be excluded from one send.`);
+      return;
+    }
     if (sentExclusions.length === 0) {
       this.attachError.set('Select at least one suppression list in step 3 first.');
       return;
     }
     const run = this.runGeneration;
-    const target: Pick<AudienceAttachExistingRequest, 'masterListId' | 'includeListIds'> =
-      includes.length === 1 ? { masterListId: includes[0] } : { includeListIds: includes };
+    const dispatchProject = this.projectSlug();
+    const base = { briefId, suppressionListIds: sentExclusions, ...(summary ? { inclusionSummary: summary } : {}) };
+    const request: AudienceAttachExistingRequest = includes.length === 1 ? { ...base, masterListId: includes[0] } : { ...base, includeListIds: includes };
     this.attachInFlight.set(true);
     this.attachingId.set(busyId);
     this.attachError.set(null);
     this.campaignService
-      .attachExistingAudience(this.projectSlug(), {
-        briefId,
-        ...target,
-        suppressionListIds: sentExclusions,
-        ...(summary ? { inclusionSummary: summary } : {}),
-      })
-      .pipe(takeUntilDestroyed(this.destroyRef))
+      .attachExistingAudience(this.projectSlug(), request)
+      // Released when the REQUEST settles -- see `attachInFlight`. The generation guards below
+      // still decide whether its result is shown.
+      .pipe(
+        finalize(() => this.attachInFlight.set(false)),
+        takeUntilDestroyed(this.destroyRef)
+      )
       .subscribe({
         next: (result) => {
+          // Reported past the generation guard when the PROJECT is unchanged. The attach is recorded
+          // upstream whatever the panel did meanwhile, and the parent accepts the row only for the
+          // brief it is addressing now -- so after an event round trip A -> B -> A the row lands on
+          // A, where otherwise the lock released at `finalize` while the parent still showed the old
+          // audience upstream no longer resolves. It is withheld while ANOTHER project is on screen;
+          // after a round trip back, the parent's brief-id check is what keeps it to its own brief.
+          if (run === this.runGeneration || dispatchProject === this.projectSlug()) {
+            this.audienceAttached.emit(result.audience);
+          }
           if (run !== this.runGeneration) {
             return;
           }
           // Settled, so the next write may start -- released here rather than on a brief switch.
           this.attachInFlight.set(false);
-          // The parent guards the emission on its own brief id, so it is safe to emit after a
-          // brief switch; the local banner is not, because it would describe the previous brief.
-          this.audienceAttached.emit(result.audience);
+          // The local banner IS guarded: it would describe the previous brief.
           if (briefId !== this.briefId()) {
             return;
           }
@@ -1771,12 +1997,61 @@ export class AudienceBuilderTabComponent {
     return hasSuppression || hasMaster || nonEmpty(candidate.suppressionName) || nonEmpty(candidate.masterName) ? (body as AudienceComposeMasterPartial) : null;
   }
 
+  /** Tells the parent about a master that exists but was not recorded, scoped by its dispatch. */
+  private reportUnattached(master: AudienceComposedList, briefId: string, projectSlug: string, scope: number): void {
+    this.audienceComposeUnattached.emit({ master, briefId, projectSlug, scope });
+  }
+
+  /** Whether a brief arriving now is for a different event than the panel's work. See the reset. */
+  private isDifferentEvent(previousKey: string, nextKey: string, previousUrl: string, advertised: string): boolean {
+    const edited = this.eventUrlControl.dirty;
+    // The work's URL: what was discovered, or -- before any discovery -- what the operator typed.
+    const workUrl = this.discoveredEventUrl() || this.eventUrlControl.value.trim();
+    // An EMPTY advertised URL is a mismatch too, unless the work has no URL either: a brief with no
+    // URL is no evidence the work was for its event.
+    const discoveredElsewhere = workUrl !== advertised;
+    if (previousKey === '') {
+      // First brief after exploratory work: kept only if it was discovered for this brief's URL.
+      return edited && discoveredElsewhere;
+    }
+    if (previousKey !== nextKey) {
+      return true;
+    }
+    if (edited) {
+      return discoveredElsewhere;
+    }
+    // Same event, untouched field: a CORRECTED or REMOVED advertised URL means the lists came from
+    // the old one.
+    return previousUrl !== '' && previousUrl !== advertised;
+  }
+
+  /**
+   * Starts the panel over for a new project or event, keeping the one fact the reset must not lose.
+   *
+   * A compose in flight is not cancelled by the reset -- the HubSpot lists are already being
+   * created -- and its reply is about to be discarded by the run-generation guard. The reset itself
+   * is still correct: showing the previous context's discovery is its own defect. So reset, and
+   * record the create as unconfirmed in the context it was made in, because losing that silently
+   * is how a duplicate gets composed later.
+   */
+  private resetForNewContext(strandedIn: string): void {
+    const wasComposing = this.composing();
+    this.resetRunState();
+    if (wasComposing) {
+      this.composeStranded.set(true);
+      this.strandedProject.set(strandedIn);
+    }
+  }
+
   /**
    * Compose is NOT idempotent and a reset does not cancel it — the HubSpot lists are already
    * being created by the time a reply lands. Discarding a stale reply is right for every other
    * request here, but for compose it would leave real lists with no confirmation and no orphan
-   * link, and a retry would duplicate them. Discover is therefore disabled while `composing`, so
-   * a reset cannot be reached from the one control that would otherwise strand a compose.
+   * link, and a retry would duplicate them.
+   *
+   * So Discover is disabled while `composing`, and the two resets that CAN arrive during a compose
+   * -- a project switch and a different event's brief -- go through `resetForNewContext`, which
+   * records the create as stranded instead of losing it.
    */
   private resetRunState(): void {
     // Invalidate every in-flight reply from the previous run BEFORE clearing the state they
@@ -1800,6 +2075,7 @@ export class AudienceBuilderTabComponent {
     this.mastersLoading.set(false);
     this.suppressionLoading.set(false);
     this.hasDiscovered.set(false);
+    this.discoveredEventUrl.set('');
     this.identity.set(null);
     this.discoveredLists.set([]);
     this.missingSignals.set([]);
@@ -1825,8 +2101,8 @@ export class AudienceBuilderTabComponent {
     this.discoveryError.set(null);
     this.composeAttempted.set(false);
     this.replaceRequestedFor.set(null);
-    // The run generation discards the in-flight reply, so nothing else will release this.
-    this.attachInFlight.set(false);
+    // `attachInFlight` and `composeOnWire` are deliberately NOT released here: the requests are
+    // still running, and their own `finalize` releases them when they settle.
     this.attachingId.set(null);
     this.attachResult.set(null);
     this.attachError.set(null);
