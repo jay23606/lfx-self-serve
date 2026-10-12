@@ -278,6 +278,18 @@ describe('NewsletterInviteService', () => {
       expect(deps.emailService.sendEmail).toHaveBeenCalledTimes(2);
     });
 
+    it('releases the cooldown when the roster check or link building fails before the send', async () => {
+      deps.memberBenefitService.isEmailInGroup.mockRejectedValueOnce(new Error('query-service down'));
+      await expect(service.sendInvite(req, 'f-1', 'coworker@acme-motors.example')).rejects.toThrow('query-service down');
+
+      delete process.env['PCC_BASE_URL'];
+      await expect(service.sendInvite(req, 'f-1', 'coworker@acme-motors.example')).rejects.toThrow('PCC_BASE_URL');
+
+      process.env['PCC_BASE_URL'] = 'https://app.lfx.example';
+      await service.sendInvite(req, 'f-1', 'coworker@acme-motors.example');
+      expect(deps.emailService.sendEmail).toHaveBeenCalledTimes(1);
+    });
+
     it('strips bare-domain lures from the inviter name and falls back when nothing is left', async () => {
       getEffectiveName.mockReturnValue('Jane Pay now at lfx-secure.example/login');
       await service.sendInvite(req, 'f-1', 'coworker@acme-motors.example');

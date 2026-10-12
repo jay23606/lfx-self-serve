@@ -173,21 +173,21 @@ export class NewsletterInviteService {
       logger.info(req, operation, 'Invitee was already emailed about this list recently — not emailed again', { committee_uid: entry.group.uid });
       return result;
     }
-    // Claim the cooldown before any await so a double-click or retry cannot send twice; released
-    // again if the send fails, so the sender can retry.
+    // Claim the cooldown before any await so a double-click or retry cannot send twice. Any failure
+    // after the claim (roster check, rendering, send) releases it, so the sender can retry.
     NewsletterInviteService.recentInvites.set(cooldownKey, Date.now());
-    if (await this.memberBenefitService.isEmailInGroup(req, m2mToken, entry.group.uid, email)) {
-      logger.info(req, operation, 'Invitee is already on the newsletter list — not emailed', { committee_uid: entry.group.uid });
-      return result;
-    }
-
-    const rendered = renderNewsletterInviteEmail({
-      inviter_name: this.inviterName(getEffectiveName(req) || getEffectiveUsername(req) || ''),
-      company_name: this.singleLine(inviteeCompany.company_name || eligibility.match.company_name || 'your company'),
-      foundation_name: this.singleLine(entry.foundation.name),
-      accept_url: buildNewsletterInviteAcceptUrl(this.appBaseUrl(), entry.foundation.slug, entry.group.uid),
-    });
     try {
+      if (await this.memberBenefitService.isEmailInGroup(req, m2mToken, entry.group.uid, email)) {
+        logger.info(req, operation, 'Invitee is already on the newsletter list — not emailed', { committee_uid: entry.group.uid });
+        return result;
+      }
+
+      const rendered = renderNewsletterInviteEmail({
+        inviter_name: this.inviterName(getEffectiveName(req) || getEffectiveUsername(req) || ''),
+        company_name: this.singleLine(inviteeCompany.company_name || eligibility.match.company_name || 'your company'),
+        foundation_name: this.singleLine(entry.foundation.name),
+        accept_url: buildNewsletterInviteAcceptUrl(this.appBaseUrl(), entry.foundation.slug, entry.group.uid),
+      });
       await this.emailService.sendEmail(req, { to: email, ...rendered });
     } catch (error) {
       NewsletterInviteService.recentInvites.delete(cooldownKey);
