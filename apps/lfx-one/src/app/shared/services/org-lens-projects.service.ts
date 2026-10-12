@@ -3,13 +3,7 @@
 
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
-import type {
-  HealthScore,
-  OrgLensProjectSearchResponse,
-  OrgLensProjectsResponse,
-  OrgProjectsWorkspace,
-  OrgProjectsWorkspacesResponse,
-} from '@lfx-one/shared/interfaces';
+import type { OrgLensProjectSearchResponse, OrgLensProjectsResponse, OrgProjectsWorkspace, OrgProjectsWorkspacesResponse } from '@lfx-one/shared/interfaces';
 import { map, Observable } from 'rxjs';
 
 @Injectable({
@@ -24,13 +18,12 @@ export class OrgLensProjectsService {
       params = params.set('slugs', slugs.join(','));
     }
     return this.http.get<OrgLensProjectsResponse>(`/api/orgs/${encodeURIComponent(orgUid)}/lens/projects`, { params }).pipe(
-      // A pre-v2-breakdown BFF emits a band without `healthOverallScore`, which the badge must treat as
-      // unavailable so it agrees with the popup and accessible name.
+      // A pre-v2-breakdown BFF emits a band without `healthOverallScore`; treat it as unavailable so the badge agrees with the popup.
       map((response) => ({
         ...response,
         projects: response.projects.map((project) => ({
           ...project,
-          health: project.healthOverallScore == null ? ('unavailable' as HealthScore) : project.health,
+          health: project.healthOverallScore == null ? 'unavailable' : project.health,
         })),
       }))
     );
