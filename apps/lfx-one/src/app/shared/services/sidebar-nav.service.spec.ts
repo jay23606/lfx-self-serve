@@ -5,6 +5,7 @@ import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
   COMMITTEE_LABEL,
+  CROWDFUNDING_ATTRIBUTION_STEP_FLAG,
   FORMATION_ENABLED_FLAG,
   GATEWAZE_EMBED_ENABLED_FLAG,
   GW_EMBED_FOUNDATION_NEWSLETTERS_LINK,
@@ -17,10 +18,12 @@ import {
   ORG_LENS_ROI_ENABLED_FLAG,
 } from '@lfx-one/shared/constants';
 import { Lens, SidebarMenuItem } from '@lfx-one/shared/interfaces';
+import { AccountContextService } from '@services/account-context.service';
 import { AnalyticsService } from '@services/analytics.service';
 import { FeatureFlagService } from '@services/feature-flag.service';
 import { LensService } from '@services/lens.service';
 import { OrgLensNavigationService } from '@services/org-lens-navigation.service';
+import { OrgRoleGrantsService } from '@services/org-role-grants.service';
 import { PersonaService } from '@services/persona.service';
 import { ProjectContextService } from '@services/project-context.service';
 import { UserService } from '@services/user.service';
@@ -45,7 +48,10 @@ describe('SidebarNavService', () => {
   const currentPersona = signal('executive-director');
   const isAuditor = signal(false);
   const gatewazeEmbedEnabled = signal(false);
+  const crowdfundingAttributionEnabled = signal(false);
   const canWrite = signal(false);
+  const selectedOrgUid = signal<string | null>(null);
+  const orgWriterSet = signal(new Set<string>());
   /** Settable so the Gatewaze embed's tenant gate can be exercised; the embed is AAIF-only. */
   const selectedProject = signal<{ slug: string } | null>(null);
   const selectedFoundation = signal<{ slug: string } | null>(null);
@@ -77,7 +83,10 @@ describe('SidebarNavService', () => {
     currentPersona.set('executive-director');
     isAuditor.set(false);
     gatewazeEmbedEnabled.set(false);
+    crowdfundingAttributionEnabled.set(false);
     canWrite.set(false);
+    selectedOrgUid.set(null);
+    orgWriterSet.set(new Set());
 
     TestBed.configureTestingModule({
       providers: [
@@ -92,6 +101,7 @@ describe('SidebarNavService', () => {
               if (key === MENTORSHIP_ENABLED_FLAG) return mentorshipEnabled;
               if (key === FORMATION_ENABLED_FLAG) return formationEnabled;
               if (key === GATEWAZE_EMBED_ENABLED_FLAG) return gatewazeEmbedEnabled;
+              if (key === CROWDFUNDING_ATTRIBUTION_STEP_FLAG) return crowdfundingAttributionEnabled;
               return signal(false);
             }),
           },
@@ -134,6 +144,8 @@ describe('SidebarNavService', () => {
         // shape, so the builder is stubbed to the legacy form; `orgSegment` names an organization for
         // the cases that assert the org-scoped form.
         { provide: OrgLensNavigationService, useValue: { orgLensPath: (page: string) => (orgSegment() ? `/org/${orgSegment()}/${page}` : `/org/${page}`) } },
+        { provide: AccountContextService, useValue: { selectedAccount: () => ({ accountId: '', accountName: 'Acme', uid: selectedOrgUid() }) } },
+        { provide: OrgRoleGrantsService, useValue: { writerSet: orgWriterSet } },
       ],
     });
   });
@@ -202,6 +214,28 @@ describe('SidebarNavService', () => {
     expect(findByLink(items, '/foundation/mktg-os-agents')).toBeUndefined();
     expect(itemLabels.indexOf(MKTG_OS_AGENTS_LABEL.nav)).toBe(itemLabels.indexOf('Documents') + 1);
     expect(itemLabels.indexOf('Governance')).toBe(itemLabels.indexOf(MKTG_OS_AGENTS_LABEL.nav) + 1);
+  });
+
+  it('shows Initiatives right after Documents on the project and foundation lenses only for writers with the flag on', () => {
+    const service = TestBed.inject(SidebarNavService);
+
+    for (const lens of ['project', 'foundation'] as const) {
+      activeLens.set(lens);
+
+      crowdfundingAttributionEnabled.set(false);
+      canWrite.set(true);
+      expect(findByLink(service.sidebarItems(), `/${lens}/initiatives`)).toBeUndefined();
+
+      crowdfundingAttributionEnabled.set(true);
+      canWrite.set(false);
+      expect(findByLink(service.sidebarItems(), `/${lens}/initiatives`)).toBeUndefined();
+
+      canWrite.set(true);
+      const items = service.sidebarItems();
+      const itemLabels = labels(items);
+      expect(findByLink(items, `/${lens}/initiatives`)).toEqual(expect.objectContaining({ label: 'Initiatives', testId: `sidebar-${lens}-initiatives` }));
+      expect(itemLabels.indexOf('Initiatives')).toBe(itemLabels.indexOf('Documents') + 1);
+    }
   });
 
   it('keeps the full project-lens nav without Formation when the flag is off, even for a Formation-stage project', () => {
@@ -360,49 +394,76 @@ describe('SidebarNavService', () => {
     );
   });
 
-  it('hides EasyCLA from the org lens while the M3 flag is off', () => {
+  it('renders no EasyCLA Management section and no EasyCLA entry on the org lens while the M3 flag is off', () => {
     activeLens.set('org');
 
     const items = TestBed.inject(SidebarNavService).sidebarItems();
 
+    expect(labels(items)).not.toContain('EasyCLA Management');
     expect(findByLink(items, '/org/easycla')).toBeUndefined();
     expect(labels(sectionItems(items, 'Organization Engagement'))).not.toContain('EasyCLA');
   });
 
-  it('puts EasyCLA between Code Contributions and Events inside Organization Engagement', () => {
+  it('gives EasyCLA its own EasyCLA Management section between Organization Engagement and Organization Profile', () => {
     activeLens.set('org');
     orgEasyclaEnabled.set(true);
 
     const items = TestBed.inject(SidebarNavService).sidebarItems();
-    const engagement = sectionItems(items, 'Organization Engagement');
-    const engagementLabels = labels(engagement);
+    const itemLabels = labels(items);
+    const easycla = items.find((item) => item.label === 'EasyCLA Management');
 
-    // The M3 prototype nests it in the section — a top-level entry beside Memberships/Projects is wrong.
-    expect(findByLink(items, '/org/easycla')).toBeUndefined();
-    expect(findByLink(engagement, '/org/easycla')).toEqual(
-      expect.objectContaining({ label: 'EasyCLA', routerLink: '/org/easycla', testId: 'sidebar-org-easycla' })
-    );
-    expect(engagementLabels.indexOf('EasyCLA')).toBe(engagementLabels.indexOf('Code Contributions') + 1);
-    expect(engagementLabels.indexOf('Events')).toBe(engagementLabels.indexOf('EasyCLA') + 1);
+    expect(easycla).toEqual(expect.objectContaining({ isSection: true, expanded: true }));
+    expect(easycla?.items).toEqual([
+      expect.objectContaining({ label: 'EasyCLA', icon: 'fa-light fa-file-signature', routerLink: '/org/easycla', testId: 'sidebar-org-easycla' }),
+    ]);
+    expect(itemLabels.indexOf('EasyCLA Management')).toBe(itemLabels.indexOf('Organization Engagement') + 1);
+    expect(itemLabels.indexOf('Organization Profile')).toBe(itemLabels.indexOf('EasyCLA Management') + 1);
+    expect(labels(sectionItems(items, 'Organization Engagement'))).toEqual([
+      'People',
+      'Code Contributions',
+      'Events',
+      'Training & Certification',
+      'Meetings',
+      COMMITTEE_LABEL.plural,
+    ]);
   });
 
-  it('keeps ROI after Projects while EasyCLA stays in the section when both flags are on', () => {
+  it('opts only EasyCLA into subpath highlighting across the Org Lens tree', () => {
     activeLens.set('org');
     orgEasyclaEnabled.set(true);
     orgRoiEnabled.set(true);
 
-    const items = TestBed.inject(SidebarNavService).sidebarItems();
-    const itemLabels = labels(items);
-    const engagementLabels = labels(sectionItems(items, 'Organization Engagement'));
+    const flatten = (items: SidebarMenuItem[]): SidebarMenuItem[] => items.flatMap((item) => [item, ...flatten(item.items ?? [])]);
+    const optedIn = flatten(TestBed.inject(SidebarNavService).sidebarItems()).filter((item) => item.activeOnSubpaths);
+
+    expect(labels(optedIn)).toEqual(['EasyCLA']);
+  });
+
+  it('aliases only EasyCLA, to the leftover /org/easycla mount, so an addressed link still highlights there', () => {
+    activeLens.set('org');
+    orgEasyclaEnabled.set(true);
+    orgRoiEnabled.set(true);
+    orgSegment.set('acme-inc');
+
+    const flatten = (items: SidebarMenuItem[]): SidebarMenuItem[] => items.flatMap((item) => [item, ...flatten(item.items ?? [])]);
+    const aliased = flatten(TestBed.inject(SidebarNavService).sidebarItems()).filter((item) => item.activeAliases);
+
+    expect(aliased).toEqual([expect.objectContaining({ label: 'EasyCLA', routerLink: '/org/acme-inc/easycla', activeAliases: ['/org/easycla'] })]);
+  });
+
+  it('keeps ROI after Projects and the EasyCLA section above Organization Profile when both flags are on', () => {
+    activeLens.set('org');
+    orgEasyclaEnabled.set(true);
+    orgRoiEnabled.set(true);
+
+    const itemLabels = labels(TestBed.inject(SidebarNavService).sidebarItems());
 
     // The two flags are independent: EasyCLA must not displace ROI's slot, or vice versa.
     expect(itemLabels.indexOf('ROI Metrics')).toBe(itemLabels.indexOf('Projects') + 1);
-    expect(engagementLabels.indexOf('EasyCLA')).toBe(engagementLabels.indexOf('Code Contributions') + 1);
+    expect(itemLabels.indexOf('Organization Profile')).toBe(itemLabels.indexOf('EasyCLA Management') + 1);
   });
 
-  // The flag-gated items are placed by looking their neighbours up by address; both sides must
-  // agree on the org-scoped form or ROI/EasyCLA silently fall to the end of their section.
-  it('addresses every Org Lens item to the selected organization and still places ROI and EasyCLA by their neighbours', () => {
+  it('addresses every Org Lens item to the selected organization and still places ROI and the EasyCLA section by their neighbours', () => {
     activeLens.set('org');
     orgEasyclaEnabled.set(true);
     orgRoiEnabled.set(true);
@@ -410,18 +471,41 @@ describe('SidebarNavService', () => {
 
     const items = TestBed.inject(SidebarNavService).sidebarItems();
     const engagement = sectionItems(items, 'Organization Engagement');
+    const easycla = sectionItems(items, 'EasyCLA Management');
     const itemLabels = labels(items);
-    const engagementLabels = labels(engagement);
 
     expect(findByLink(items, '/org/acme-inc/overview')).toEqual(expect.objectContaining({ label: 'Dashboard' }));
     expect(findByLink(items, '/org/acme-inc/roi')).toEqual(expect.objectContaining({ label: 'ROI Metrics', testId: 'sidebar-org-roi' }));
     expect(findByLink(engagement, '/org/acme-inc/people')).toEqual(expect.objectContaining({ label: 'People' }));
     // Phase 2 (lfx-self-serve#2743): EasyCLA is addressed like every other Org Lens item.
-    expect(findByLink(engagement, '/org/acme-inc/easycla')).toEqual(expect.objectContaining({ label: 'EasyCLA', testId: 'sidebar-org-easycla' }));
-    const orgLinks = [...items, ...engagement].map((item) => item.routerLink).filter((link): link is string => !!link);
+    expect(findByLink(easycla, '/org/acme-inc/easycla')).toEqual(expect.objectContaining({ label: 'EasyCLA', testId: 'sidebar-org-easycla' }));
+    const orgLinks = [...items, ...engagement, ...easycla].map((item) => item.routerLink).filter((link): link is string => !!link);
     expect(orgLinks.filter((link) => !link.startsWith('/org/acme-inc/'))).toEqual([]);
     expect(itemLabels.indexOf('ROI Metrics')).toBe(itemLabels.indexOf('Projects') + 1);
-    expect(engagementLabels.indexOf('EasyCLA')).toBe(engagementLabels.indexOf('Code Contributions') + 1);
+    expect(itemLabels.indexOf('Organization Profile')).toBe(itemLabels.indexOf('EasyCLA Management') + 1);
+  });
+
+  it('shows Initiatives after Projects and ROI on the org lens only for a direct writer on the selected organization with the flag on', () => {
+    const orgUid = '001000000000000AAA';
+    activeLens.set('org');
+    orgSegment.set('acme-inc');
+    selectedOrgUid.set(orgUid);
+    orgRoiEnabled.set(true);
+    const service = TestBed.inject(SidebarNavService);
+
+    orgWriterSet.set(new Set([orgUid]));
+    expect(findByLink(service.sidebarItems(), '/org/acme-inc/initiatives')).toBeUndefined();
+
+    crowdfundingAttributionEnabled.set(true);
+    orgWriterSet.set(new Set(['001000000000000BBB']));
+    expect(findByLink(service.sidebarItems(), '/org/acme-inc/initiatives')).toBeUndefined();
+
+    orgWriterSet.set(new Set([orgUid]));
+    const items = service.sidebarItems();
+    const itemLabels = labels(items);
+    expect(findByLink(items, '/org/acme-inc/initiatives')).toEqual(expect.objectContaining({ label: 'Initiatives', testId: 'sidebar-org-initiatives' }));
+    expect(itemLabels.indexOf('ROI Metrics')).toBe(itemLabels.indexOf('Projects') + 1);
+    expect(itemLabels.indexOf('Initiatives')).toBe(itemLabels.indexOf('ROI Metrics') + 1);
   });
 
   it('inserts Formations between Events and Mailing Lists on foundation lens for a full-access user when the flag is on', () => {

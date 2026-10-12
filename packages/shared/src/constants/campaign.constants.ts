@@ -28,6 +28,7 @@ import type {
   CampaignTabOption,
   CampaignToggleAction,
   CampaignToggleStatus,
+  GoogleCreativeEitherOrRule,
   GoogleCreativeFieldSpec,
   KeywordActionOutcome,
   KeywordActionPlatform,
@@ -1411,6 +1412,106 @@ export const REDDIT_OBJECTIVE_LABELS: Readonly<Record<RedditObjective, string>> 
 } as const;
 
 /**
+ * The objective both creators fall back to when a request omits one.
+ *
+ * Stated here because it has to be what the picker starts on. Nothing has ever sent `objective`,
+ * so every Reddit campaign created to date was built from this default on whichever arm served it
+ * — `defaultRedditObjective` upstream and `config.objective ?? 'conversions'` in
+ * the legacy creator (`reddit-ads.service.ts`), which agree. Seeding the control with anything
+ * else would quietly change what an operator who touches nothing gets.
+ */
+export const DEFAULT_REDDIT_OBJECTIVE: RedditObjective = 'conversions';
+
+/**
+ * The objectives the picker offers, as distinct from the four `RedditObjective` admits.
+ *
+ * `video_views` is withheld because it cannot currently succeed. Reddit has no bare `VIDEO_VIEWS`
+ * optimization goal, so a video-view campaign must name a concrete one; upstream requires a
+ * `videoGoal` from `REDDIT_VIDEO_GOALS` for that objective and refuses the create without it, and
+ * no control collects one yet. (The legacy creator does not refuse — it sends its own
+ * `optimizationGoal: 'VIDEO_VIEWS'`, which is the value Reddit has no such goal for, so that arm
+ * fails at Reddit instead of locally.) Offer it once a goal control exists on both roads.
+ *
+ * `REDDIT_OBJECTIVE_LABELS` stays total over `RedditObjective` rather than being narrowed to this
+ * list, so a draft holding a withheld objective still renders a name instead of `undefined` — the
+ * same split, for the same reason, as `META_SELECTABLE_OBJECTIVES` and `META_OBJECTIVE_LABELS`.
+ */
+export const REDDIT_SELECTABLE_OBJECTIVES = ['awareness', 'traffic', 'conversions'] as const;
+
+/**
+ * The call-to-action button labels Reddit accepts on a promoted post.
+ *
+ * Mirrors `redditCTAs` in lfx-v2-campaign-service `internal/platform/reddit/client.go`, which
+ * captured them live from the Reddit Ads API v3 post-create validation on 2026-08-20. The values
+ * are Reddit's exact title-case labels — that casing is what must be sent — and the order here is
+ * upstream's textual order so the two lists diff against each other directly.
+ *
+ * Upstream matches case-insensitively and rejects anything outside the set, so this list is what
+ * bounds the choice offered here: a label absent from it cannot be sent at all, whether or not
+ * Reddit would accept it. Re-capture both sides together if upstream's set changes.
+ *
+ * Only consulted on the author-a-post path (an `imageUrl` with no `postUrl`); upstream ignores the
+ * CTA entirely when the campaign points at an existing post.
+ */
+export const REDDIT_CALL_TO_ACTIONS = [
+  'Apply Now',
+  'Contact Us',
+  'Download',
+  'Get a Quote',
+  'Get Showtimes',
+  'Install',
+  'Learn More',
+  'Order Now',
+  'Play Now',
+  'Pre-order Now',
+  'See Menu',
+  'Shop Now',
+  'Sign Up',
+  'View More',
+  'Watch Now',
+  'Book Now',
+  'Buy Tickets',
+  'Get Directions',
+  'Listen Now',
+  'Read More',
+  'Subscribe',
+  'Visit Store',
+  'Donate Now',
+  'Remind Me',
+] as const;
+
+/**
+ * The CTA upstream falls back to when none is sent — `defaultRedditCTA` in the same upstream file
+ * (`defaultRedditCTA`). Stated here so the control can pre-select what an empty field would produce
+ * rather than presenting a blank that silently resolves to something else.
+ *
+ * Must stay a member of `REDDIT_CALL_TO_ACTIONS`, exactly as upstream requires of its own default;
+ * `campaign.constants.spec.ts` pins that.
+ */
+export const DEFAULT_REDDIT_CALL_TO_ACTION = 'Learn More';
+
+/**
+ * The longest headline Reddit accepts on a promoted post — `maxRedditHeadlineRunes` in the same
+ * upstream file (`maxRedditHeadlineRunes`).
+ *
+ * Counted in CODE POINTS, not UTF-16 units: upstream measures with `utf8.RuneCountInString`, so an
+ * emoji or an astral character is one unit there and two in a JavaScript `.length`. Measuring the
+ * JS way would refuse headlines Reddit accepts, and over-refusal is the one failure mode a guard
+ * mirroring upstream must not have. Use `[...headline].length`.
+ */
+export const MAX_REDDIT_HEADLINE_LENGTH = 300;
+
+/**
+ * The concrete video optimization goals Reddit accepts — `validVideoGoals` in the same upstream
+ * file (`validVideoGoals`).
+ *
+ * Required for, and only for, the `video_views` objective: Reddit has no bare `VIDEO_VIEWS` goal,
+ * so a video-view campaign must name one of these, and upstream validates it before any mutating
+ * call. Sending one with any other objective is pointless, not fatal.
+ */
+export const REDDIT_VIDEO_GOALS = ['VIDEO_VIEW_6S', 'VIDEO_VIEW_15S'] as const;
+
+/**
  * Shown when a creation job can no longer be found on either polling source.
  *
  * Lives in shared constants rather than in `campaign-proxy.service.ts` because both tiers
@@ -1964,8 +2065,9 @@ export const AUDIENCE_INCLUSION_SUMMARY_MAX_LENGTH = 2_000;
  * Deliberately FAR above anything legitimate, because these are resource bounds and not content
  * rules — every width and count in `GOOGLE_CREATIVE_FIELD_SPECS` is the upstream client's preflight
  * to enforce, and this layer stays shape-only. The widest catalogue list holds 20 entries and the
- * widest text field 90 characters, so nothing a real operator can produce comes near either ceiling;
- * refusing here can therefore never refuse a create upstream would have accepted.
+ * widest text field 256 characters (`assetGroupName`), so nothing a real operator can produce comes
+ * near either ceiling; refusing here can therefore never refuse a create upstream would have
+ * accepted.
  */
 export const MAX_GOOGLE_CREATIVE_LIST_ENTRIES = 100;
 export const MAX_GOOGLE_CREATIVE_FIELD_LENGTH = 2048;
@@ -2136,7 +2238,7 @@ export const GOOGLE_CREATIVE_FIELD_SPECS = {
   'demand-gen': [
     { control: 'headlines', label: 'Headlines', kind: 'list', min: 1, max: 5, width: 30 },
     { control: 'descriptions', label: 'Descriptions', kind: 'list', min: 1, max: 5, width: 90 },
-    { control: 'businessName', label: 'Business name', kind: 'text', width: 25, hint: 'Required by Google once a creative is supplied.' },
+    { control: 'businessName', label: 'Business name', kind: 'text', width: 25, requiredOnce: true, hint: 'Required by Google once a creative is supplied.' },
     { control: 'callToActionText', label: 'Call to action', kind: 'text', width: 30 },
     {
       control: 'marketingImages',
@@ -2170,8 +2272,25 @@ export const GOOGLE_CREATIVE_FIELD_SPECS = {
       width: 90,
       hint: 'At least one must be 60 characters or fewer — Google renders it in a short slot the other channels do not have.',
     },
-    { control: 'businessName', label: 'Business name', kind: 'text', width: 25 },
-    { control: 'assetGroupName', label: 'Asset group name', kind: 'text', hint: 'Defaults to the event name plus " - Asset Group" when blank.' },
+    {
+      control: 'businessName',
+      label: 'Business name',
+      kind: 'text',
+      width: 25,
+      requiredOnce: true,
+      hint: 'Required by Google once an asset group is supplied.',
+    },
+    {
+      control: 'assetGroupName',
+      label: 'Asset group name',
+      kind: 'text',
+      // 256 is campaign-service's `maxAssetGroupNameRunes`, which is `maxCampaignNameRunes`
+      // (`internal/platform/googleads/campaign.go`) — Google documents no separate asset-group
+      // limit. Counted in RUNES on the trimmed value there, which is why this entry could not be
+      // stated until the validators measured code points rather than UTF-16 units.
+      width: 256,
+      hint: 'Defaults to the event name plus " - Asset Group" when blank.',
+    },
     { control: 'path1', label: 'Display path 1', kind: 'text', width: 15 },
     { control: 'path2', label: 'Display path 2', kind: 'text', width: 15, hint: 'Renders only when display path 1 is also set.' },
     {
@@ -2196,9 +2315,16 @@ export const GOOGLE_CREATIVE_FIELD_SPECS = {
   ],
   display: [
     { control: 'headlines', label: 'Headlines', kind: 'list', min: 1, max: 5, width: 30 },
-    { control: 'longHeadline', label: 'Long headline', kind: 'text', width: 90, hint: 'A responsive display ad carries exactly one.' },
+    {
+      control: 'longHeadline',
+      label: 'Long headline',
+      kind: 'text',
+      width: 90,
+      requiredOnce: true,
+      hint: 'Required. A responsive display ad carries exactly one.',
+    },
     { control: 'descriptions', label: 'Descriptions', kind: 'list', min: 1, max: 5, width: 90 },
-    { control: 'businessName', label: 'Business name', kind: 'text', width: 25, hint: 'Required by Google once a creative is supplied.' },
+    { control: 'businessName', label: 'Business name', kind: 'text', width: 25, requiredOnce: true, hint: 'Required by Google once a creative is supplied.' },
     { control: 'callToActionText', label: 'Call to action', kind: 'text', width: 30 },
     {
       control: 'marketingImages',
@@ -2212,6 +2338,37 @@ export const GOOGLE_CREATIVE_FIELD_SPECS = {
     { control: 'squareLogoImages', label: 'Square logo images (1:1)', kind: 'list', max: 5 },
   ],
 } as const satisfies Record<(typeof GOOGLE_CHANNELS_WITH_CREATIVE)[number], readonly GoogleCreativeFieldSpec[]>;
+
+/**
+ * The "at least one of" rules a channel's creative carries, which no per-field bound can state.
+ *
+ * Demand Gen and Display each require a marketing image OR a square marketing image, refusing a
+ * creative that has neither and accepting one that has either (`demandgen_creative.go`,
+ * `display_creative.go`). Putting `min: 1` on both members would refuse the half upstream takes,
+ * and putting it on one would name the wrong field — so the rule lives here, over the pair.
+ *
+ * Performance Max is deliberately empty: it requires both marketing arrays SEPARATELY
+ * (`pmax_creative.go`), which its two `min: 1` catalogue entries already express. An empty list is
+ * the honest statement of that, and it keeps every creative-bearing channel indexable here.
+ *
+ * The messages are clauses, completed by the channel's section title at the point of use, so one
+ * sentence names both the channel and what it is missing.
+ */
+export const GOOGLE_CREATIVE_EITHER_OR_RULES = {
+  'demand-gen': [
+    {
+      controls: ['marketingImages', 'squareMarketingImages'],
+      message: 'needs at least one marketing image or one square marketing image.',
+    },
+  ],
+  'performance-max': [],
+  display: [
+    {
+      controls: ['marketingImages', 'squareMarketingImages'],
+      message: 'needs at least one marketing image or one square marketing image.',
+    },
+  ],
+} as const satisfies Record<(typeof GOOGLE_CHANNELS_WITH_CREATIVE)[number], readonly GoogleCreativeEitherOrRule[]>;
 
 /**
  * The `CampaignCreateRequest` key each channel's creative is sent under.
@@ -2246,13 +2403,30 @@ export const GOOGLE_CREATIVE_SECTION_TITLES = {
  * Why a Google channel's creative is worth filling in, stated per channel.
  *
  * Not decoration. campaign-service ACCEPTS a create with no creative on all three of these
- * channels — the campaign and its budget are made, and the call returns success — so nothing at
- * create time tells an operator that what they just made cannot serve. For Performance Max the
- * refusal arrives later and elsewhere: the asset group is flagged and `ToggleStatus` REFUSES the
- * activation (`internal/platform/googleads/pmax.go`), which is discovered at launch.
+ * channels — the campaign and its budget are made, and the call returns success — so nothing
+ * UPSTREAM tells an operator at create time that what they just made cannot serve. On all three
+ * the refusal arrives later and elsewhere, at activation: an empty creative leaves `AdID` blank
+ * (`demandgen.go:326`, `display.go:298`), the toggle finds no targets, and the activation gate
+ * returns `ErrCampaignNotProvisioned` (`internal/dispatch/googleads.go:2561`, `:2687`). Performance
+ * Max gets there by its own route, the asset-group check in `ToggleStatus`
+ * (`internal/platform/googleads/pmax.go`). Either way it is discovered at launch.
+ *
+ * And the refusal is PERMANENT, which is why this sentence does not offer "add the ad" as the
+ * remedy. Both inputs to the gate come from the persisted `Result` blob — `googleAdsToggleTargets`
+ * (`internal/dispatch/googleads.go:2687`) and `googleAdsToggleAssetGroup` (`:2614`) each return
+ * early on an empty `Result` and unmarshal nothing else, and the call site says so outright
+ * (`:2083-2089`). Nothing re-reads Google. So an ad an operator adds by hand in the Ads UI is
+ * never discovered, and activation from LFX stays refused for the life of the campaign. The
+ * service's own gate message says the same of an adopted row: un-pausing "happens in Google Ads"
+ * (`:2559-2560`).
+ *
+ * This is the standing line, shown on a section before anything is typed. The form also says it
+ * about the current state, naming the channels that are actually empty, in the Implementation
+ * tab's `googleCreativeEmptyWarning` — which is a warning and not a refusal, precisely because
+ * upstream accepts this shape.
  */
 export const GOOGLE_CREATIVE_REQUIRED_NOTICE =
-  'Without creative this campaign is created as an empty shell: it has no ad, it cannot serve, and Performance Max will refuse to activate.';
+  'Without creative this campaign is created as an empty shell: it has no ad and it cannot serve. Activating it from LFX is then refused permanently — adding the ad in Google Ads afterwards does not lift the refusal — so it has to be finished and launched in Google Ads, or recreated here with creative.';
 
 /**
  * The bidding strategies campaign-service accepts, in the caller vocabulary it accepts them in.

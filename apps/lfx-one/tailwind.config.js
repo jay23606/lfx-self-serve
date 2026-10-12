@@ -28,16 +28,20 @@ import {
   HEALTH_METRICS_EVENTS_GEOGRAPHY_BAR_CLASS,
   HEALTH_METRICS_EVENTS_ORGANIZATIONS_BAR_CLASS,
   HEALTH_METRICS_EVENTS_ORGANIZATIONS_MEMBERSHIP,
+  HEALTH_METRICS_EVENTS_REVENUE_GOAL_STATUSES,
   HEALTH_METRICS_EVENTS_SPEAKERS_ORGANIZATION_BAR_CLASS,
   HEALTH_METRICS_EVENTS_SPEAKERS_STATUS_GROUPS,
   HEALTH_METRICS_EVENTS_SPEAKERS_UNGROUPED_BADGE_CLASS,
   HEALTH_METRICS_EVENTS_SPONSORSHIP_BAR_CLASS,
   HEALTH_METRICS_MEMBERS_AT_RISK_BAR_CLASS,
+  HEALTH_METRICS_MEMBERS_AT_RISK_CHURN_RISK_CLASSES,
   HEALTH_METRICS_MEMBERS_CHURN_SHARE_BAR_CLASS,
   HEALTH_METRICS_MEMBERS_DIRECTORY_ENGAGEMENT_DOT_CLASSES,
   HEALTH_METRICS_MEMBERS_DIRECTORY_NPS_CHIP_CLASSES,
   HEALTH_METRICS_MEMBERS_DIRECTORY_TIER_PILL_CLASS,
   HEALTH_METRICS_MEMBERS_NPS_SEGMENTS,
+  HEALTH_METRICS_MEMBERS_RENEWALS_BALANCE_MARKER,
+  HEALTH_METRICS_MEMBERS_RENEWALS_RENEWED_MARKER,
   HEALTH_METRICS_NON_MEMBERS_CONVERSION_BAR_CLASS,
   HEALTH_METRICS_OVERVIEW_CLASSIFICATIONS,
   HEALTH_METRICS_OVERVIEW_REVENUE_STREAMS,
@@ -57,7 +61,6 @@ import {
   MENTORSHIP_MENTEE_PAST_OUTCOME_CLASSES,
   MENTORSHIP_MENTEE_STATUS_BADGE_CLASSES,
   MENTORSHIP_MENTEE_TASK_STATUS_CLASSES,
-  MENTORSHIP_MENTOR_PROGRAM_TERM_STATUS_BADGE_CLASSES,
   MENTORSHIP_MENTOR_STATUS_BADGE_CLASSES,
   MENTORSHIP_MENTORING_HISTORY_STATUS_BADGE_CLASSES,
   MENTORSHIP_PROGRAM_AVATAR_PALETTE,
@@ -96,7 +99,6 @@ export default {
     // Mentors tab row actions: icon tints (incl. hover:) picked at runtime from MENTORSHIP_ADMIN_MENTOR_ACTION_APPEARANCE.
     ...Object.values(MENTORSHIP_ADMIN_MENTOR_ACTION_APPEARANCE).flatMap(({ styleClass }) => styleClass.split(' ')),
     ...Object.values(MENTORSHIP_MENTOR_STATUS_BADGE_CLASSES).flatMap((classes) => classes.split(' ')),
-    ...Object.values(MENTORSHIP_MENTOR_PROGRAM_TERM_STATUS_BADGE_CLASSES).flatMap((classes) => classes.split(' ')),
     ...Object.values(MENTORSHIP_MENTORING_HISTORY_STATUS_BADGE_CLASSES).flatMap((classes) => classes.split(' ')),
     ...Object.values(MENTORSHIP_MENTEE_STATUS_BADGE_CLASSES).flatMap((classes) => classes.split(' ')),
     // Mentee tasks tab — status dropdown/badge tints selected at runtime from MENTORSHIP_MENTEE_TASK_STATUS_CLASSES.
@@ -194,6 +196,8 @@ export default {
     // Events organizations membership pills and registrations bar (HEALTH_METRICS_EVENTS_ORGANIZATIONS_* in @lfx-one/shared) — applied via [class].
     ...Object.values(HEALTH_METRICS_EVENTS_ORGANIZATIONS_MEMBERSHIP).flatMap((m) => m.badgeClass.split(' ')),
     HEALTH_METRICS_EVENTS_ORGANIZATIONS_BAR_CLASS,
+    // Events revenue goal-attainment chips (HEALTH_METRICS_EVENTS_REVENUE_GOAL_STATUSES in @lfx-one/shared) — applied via [class].
+    ...Object.values(HEALTH_METRICS_EVENTS_REVENUE_GOAL_STATUSES).flatMap((s) => s.badgeClass.split(' ')),
     // Events sponsorship tier and progress bar fill (HEALTH_METRICS_EVENTS_SPONSORSHIP_BAR_CLASS in @lfx-one/shared) — applied via [class].
     HEALTH_METRICS_EVENTS_SPONSORSHIP_BAR_CLASS,
     // Events top-countries bar fill (HEALTH_METRICS_EVENTS_GEOGRAPHY_BAR_CLASS in @lfx-one/shared) — applied via [class].
@@ -204,6 +208,11 @@ export default {
     ...Object.values(HEALTH_METRICS_MEMBERS_DIRECTORY_ENGAGEMENT_DOT_CLASSES),
     // Members at-risk aging bar fill (HEALTH_METRICS_MEMBERS_AT_RISK_BAR_CLASS in @lfx-one/shared) — applied via [class].
     HEALTH_METRICS_MEMBERS_AT_RISK_BAR_CLASS,
+    // Members at-risk churn-risk chips (HEALTH_METRICS_MEMBERS_AT_RISK_CHURN_RISK_CLASSES in @lfx-one/shared) — applied via [class].
+    ...Object.values(HEALTH_METRICS_MEMBERS_AT_RISK_CHURN_RISK_CLASSES).flatMap((c) => c.split(' ')),
+    // Members renewals balance and renewed markers (HEALTH_METRICS_MEMBERS_RENEWALS_*_MARKER in @lfx-one/shared) — applied via [class].
+    HEALTH_METRICS_MEMBERS_RENEWALS_BALANCE_MARKER.textClass,
+    HEALTH_METRICS_MEMBERS_RENEWALS_RENEWED_MARKER.textClass,
     // Members NPS distribution segments (HEALTH_METRICS_MEMBERS_NPS_SEGMENTS in @lfx-one/shared) — applied via [class].
     ...HEALTH_METRICS_MEMBERS_NPS_SEGMENTS.map((segment) => segment.colorClass),
     // Non-Members warmest-organization bar fill (HEALTH_METRICS_NON_MEMBERS_CONVERSION_BAR_CLASS in @lfx-one/shared) — applied via [class].

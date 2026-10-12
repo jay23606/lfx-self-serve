@@ -60,13 +60,19 @@ import {
   GOOGLE_CAMPAIGN_NAME_TOKENS,
   GOOGLE_CHANNELS_WITH_CREATIVE,
   GOOGLE_CONVERSION_ACTION_CHANNELS,
+  GOOGLE_CREATIVE_EITHER_OR_RULES,
   GOOGLE_CREATIVE_FIELD_SPECS,
   GOOGLE_CREATIVE_REQUEST_KEYS,
   GOOGLE_CREATIVE_REQUIRED_NOTICE,
   GOOGLE_CREATIVE_SECTION_TITLES,
   GOOGLE_VIDEO_CREATE_SUPPORTED,
   GOOGLE_VIDEO_CREATE_UNSUPPORTED_REASON,
+  DEFAULT_REDDIT_CALL_TO_ACTION,
+  DEFAULT_REDDIT_OBJECTIVE,
+  REDDIT_CALL_TO_ACTIONS,
   REDDIT_MAX_BUDGET_USD,
+  REDDIT_OBJECTIVE_LABELS,
+  REDDIT_SELECTABLE_OBJECTIVES,
 } from '@lfx-one/shared/constants';
 import { CampaignService } from '@services/campaign.service';
 import { ProjectContextService } from '@services/project-context.service';
@@ -88,6 +94,8 @@ import type {
   GoogleBiddingOption,
   GoogleBiddingStrategy,
   GoogleCampaignChannel,
+  GoogleCreativeChannel,
+  GoogleCreativeEitherOrRule,
   GoogleCreativeFieldSpec,
   GoogleCreativeSection,
   LinkedInAccount,
@@ -99,7 +107,10 @@ import type {
   MetaPlacement,
   MicrosoftKeyword,
   RedditAdVariant,
+  RedditCallToAction,
+  RedditObjective,
 } from '@lfx-one/shared/interfaces';
+import { codePointLength } from '@lfx-one/shared/utils';
 
 type ImplementationStep = 'form' | 'creating' | 'results';
 
@@ -252,6 +263,21 @@ export class ImplementationTabComponent implements OnInit {
   protected readonly googleCreativeAvailable = computed<boolean>(() => this.googleCreativeEnabled() === true);
 
   /**
+   * Whether a Reddit post AUTHORED here will actually be created. `null` (unknown) withholds the
+   * controls that depend on it; nothing typed is ever cleared.
+   *
+   * Post URL — promote an EXISTING post — is read by both creators, so it stays offered whatever
+   * this answers; gating it would withhold a control that works today. Image URL and Call to Action
+   * compose a NEW post, which both creators now do (#3432), so a deployment that answers at all
+   * answers yes. The gate is kept for the `null` case: an unanswered capability still withholds
+   * them rather than letting an operator type creative a creator might discard.
+   */
+  public readonly redditCreativeEnabled = input<boolean | null>(null);
+
+  /** @see redditCreativeEnabled — an explicit yes, never a `null`. */
+  protected readonly redditCreativeAvailable = computed<boolean>(() => this.redditCreativeEnabled() === true);
+
+  /**
    * Emitted whenever a user-editable field changes, so the parent's copy is current at the moment
    * the tab is destroyed.
    *
@@ -330,6 +356,61 @@ export class ImplementationTabComponent implements OnInit {
   protected readonly videoCreateUnsupportedReason = GOOGLE_VIDEO_CREATE_UNSUPPORTED_REASON;
   protected readonly googleCreativeNotice = GOOGLE_CREATIVE_REQUIRED_NOTICE;
   protected readonly redditMaxBudget = REDDIT_MAX_BUDGET_USD;
+  protected readonly redditObjectiveLabels = REDDIT_OBJECTIVE_LABELS;
+  /**
+   * Read from `REDDIT_SELECTABLE_OBJECTIVES`, not from the labels map's keys, for the reason
+   * `metaObjectiveOptions` is: the labels map stays total over `RedditObjective` so a withheld
+   * objective still renders a name, and `video_views` is hidden from the picker only.
+   */
+  protected readonly redditObjectiveOptions = REDDIT_SELECTABLE_OBJECTIVES;
+  /**
+   * The full CTA list, with no selectable/withheld split: upstream accepts every one of these,
+   * resolving the value case-insensitively and rejecting anything outside the set. The empty
+   * choice the template adds is not a member — it means "send nothing", which upstream answers
+   * with `DEFAULT_REDDIT_CALL_TO_ACTION`.
+   */
+  protected readonly redditCallToActionOptions = REDDIT_CALL_TO_ACTIONS;
+  /** Named in the empty option's label, so "send nothing" shows what upstream will apply. */
+  protected readonly redditDefaultCallToAction = DEFAULT_REDDIT_CALL_TO_ACTION;
+  /**
+   * True when the current objective is one the picker does not offer — today only `video_views`.
+   *
+   * Exactly the Meta case, and it fails the same way if left out: the template binds `[selected]`
+   * per `<option>` rather than `[value]` on the select, so with no matching option the browser
+   * falls back to index 0 and shows `awareness`, while the signal keeps the stored objective and
+   * still sends it. The screen and the payload then disagree, and the first touch of the control
+   * overwrites the stored value for good. A disabled option is what keeps the two in step.
+   *
+   * The widening cast is deliberate, as it is on the Meta computed: the constant is narrowed to
+   * `SelectableRedditObjective`, which would make `.includes()` reject the very value asked about.
+   */
+  protected readonly redditObjectiveIsUnavailable = computed(
+    () => !(REDDIT_SELECTABLE_OBJECTIVES as readonly RedditObjective[]).includes(this.redditObjective())
+  );
+  /**
+   * The same guard for the call to action, because the exposure is the same one.
+   *
+   * A restored CTA that is no longer in `REDDIT_CALL_TO_ACTIONS` matches no `<option>`, so the
+   * browser falls back to index 0 and the control reads "Default (Learn More)" while the signal
+   * still holds the stored label and still sends it — the screen and the payload disagreeing,
+   * which is exactly what {@link redditObjectiveIsUnavailable} exists to prevent next door. There
+   * it ends in a campaign built on the wrong objective; here it ends in an upstream refusal, since
+   * `redditCTAs` rejects any label outside the set.
+   *
+   * The two sets are not withheld the same way, which is why this one is latent rather than live:
+   * `REDDIT_SELECTABLE_OBJECTIVES` is deliberately a SUBSET of `RedditObjective` (`video_views` is
+   * held back — see {@link RedditCampaignCreateRequest.videoGoal}), so an unavailable objective is
+   * reachable by design, while `REDDIT_CALL_TO_ACTIONS` is the whole upstream set and a stale CTA
+   * only becomes possible once Reddit retires a label. Guarded anyway: the failure is identical in
+   * kind and the control is a sibling of the objective's, so the two should not drift.
+   *
+   * The empty string is NOT unavailable — it is the real "let upstream default" selection the
+   * first `<option>` carries.
+   */
+  protected readonly redditCallToActionIsUnavailable = computed(() => {
+    const cta = this.redditCallToAction();
+    return cta !== '' && !(REDDIT_CALL_TO_ACTIONS as readonly string[]).includes(cta);
+  });
   protected readonly allKnownGeos: LinkedInGeoTarget[] = [...new Map(Object.values(LINKEDIN_GEO_RESOLVE_MAP).map((g) => [g.urn, g])).values()];
   protected readonly todayDate = new Date().toISOString().split('T')[0];
   protected readonly defaultEndDate = new Date(Date.now() + 30 * 86_400_000).toISOString().split('T')[0];
@@ -509,6 +590,33 @@ export class ImplementationTabComponent implements OnInit {
   protected readonly redditKeywords = signal<string[]>([]);
   protected readonly redditGeoTargets = signal<string[]>([]);
   protected readonly redditBudgetUsd = signal(500);
+  /**
+   * Reddit campaign objective. Seeded from `DEFAULT_REDDIT_OBJECTIVE` for the reason the Meta
+   * objective is seeded from upstream's: nothing has ever sent this field, so both creators have
+   * been building every Reddit campaign from their own default, and starting the picker anywhere
+   * else would change what an operator who touches nothing receives.
+   */
+  protected readonly redditObjective = signal<RedditObjective>(DEFAULT_REDDIT_OBJECTIVE);
+  /**
+   * Link to an EXISTING Reddit post to promote. Ungated, because both creators read it: the
+   * legacy path extracts the post id and builds the ad from it (`reddit-ads.service.ts`), exactly
+   * as campaign-service does.
+   *
+   * Not validated here. Both creators parse the link themselves, both reject a bad one before any
+   * campaign or ad group exists, and both accept shapes the other does not — a third parser on
+   * this side could only refuse a link that would have worked upstream, which is the one failure
+   * this control cannot afford.
+   */
+  protected readonly redditPostUrl = signal('');
+  /**
+   * The image a NEW post is composed from, and the button that post carries. Offered only while
+   * `redditCreativeAvailable()`; see that input for why these two and not `redditPostUrl`.
+   *
+   * Both are ignored upstream once a post URL is set — an existing post already has its image and
+   * its button — so the template says so rather than leaving an operator to wonder which won.
+   */
+  protected readonly redditImageUrl = signal('');
+  protected readonly redditCallToAction = signal<RedditCallToAction | ''>('');
   /**
    * Microsoft's four editable inputs (LFXV2-3312). Signal-backed like the Meta and Reddit blocks,
    * so `campaignForm.valueChanges` never sees them and each handler must `emitDraft()` by hand.
@@ -1067,6 +1175,11 @@ export class ImplementationTabComponent implements OnInit {
     // The bidding plan's own checking, which is a computed rather than control validators — see the
     // form declaration. Scoped to Google because the plan only exists there.
     if (googleSelected && this.googleBiddingError() !== null) return false;
+    // A creative that was STARTED but is below Google's minimums, which campaign-service refuses
+    // once it is non-empty. Deliberately not the empty case — that one is accepted upstream and
+    // carries a warning instead ({@link googleCreativeEmptyWarning}), because blocking it would
+    // refuse a create upstream makes.
+    if (googleSelected && this.googleCreativeError() !== null) return false;
     if (linkedInSelected && this.linkedInBudgetUsd() < 1) return false;
     if (linkedInSelected && this.linkedInGeoTargets().length === 0) return false;
     if (linkedInSelected && this.linkedInVariants().length === 0) return false;
@@ -1224,6 +1337,9 @@ export class ImplementationTabComponent implements OnInit {
   private readonly googleStrategyNeedsTarget: Signal<boolean> = this.initGoogleStrategyNeedsTarget();
   protected readonly googleTakesConversionActions: Signal<boolean> = this.initGoogleTakesConversionActions();
   protected readonly googleBiddingError: Signal<string | null> = this.initGoogleBiddingError();
+  protected readonly googleCreativeError: Signal<string | null> = this.initGoogleCreativeError();
+  protected readonly googleCreativeEmptyWarning: Signal<string | null> = this.initGoogleCreativeEmptyWarning();
+  protected readonly redditNoAdWarning: Signal<string | null> = this.initRedditNoAdWarning();
   protected readonly campaignName: Signal<string> = this.initCampaignName();
 
   // === Form Array Accessors ===
@@ -1541,9 +1657,29 @@ export class ImplementationTabComponent implements OnInit {
 
   protected onRedditBudgetInput(event: Event): void {
     this.redditBudgetUsd.set((event.target as HTMLInputElement).valueAsNumber || 0);
-    // The only Reddit control the template binds today, so this is the one door a Reddit edit
-    // comes through. Deliberately not enumerating the platform's other carried values — a count
-    // here is a claim the next editor added to the template falsifies.
+    // Every Reddit handler emits, because the section's values live in signals that
+    // `campaignForm.valueChanges` never sees. Deliberately not enumerating which controls exist —
+    // a count here is a claim the next editor added to the template falsifies.
+    this.emitDraft();
+  }
+
+  protected onRedditObjectiveChange(event: Event): void {
+    this.redditObjective.set((event.target as HTMLSelectElement).value as RedditObjective);
+    this.emitDraft();
+  }
+
+  protected onRedditPostUrlInput(event: Event): void {
+    this.redditPostUrl.set((event.target as HTMLInputElement).value.trim());
+    this.emitDraft();
+  }
+
+  protected onRedditImageUrlInput(event: Event): void {
+    this.redditImageUrl.set((event.target as HTMLInputElement).value.trim());
+    this.emitDraft();
+  }
+
+  protected onRedditCallToActionChange(event: Event): void {
+    this.redditCallToAction.set((event.target as HTMLSelectElement).value as RedditCallToAction | '');
     this.emitDraft();
   }
 
@@ -1849,6 +1985,32 @@ export class ImplementationTabComponent implements OnInit {
               interests: this.redditInterests(),
               keywords: this.redditKeywords().length > 0 ? this.redditKeywords() : this.briefKeywords().map((k) => k.term),
               variants: this.redditVariants(),
+              // Always sent, never conditioned on differing from the default: both creators fall
+              // back to the same objective when it is absent, so an explicit value is the only
+              // thing that makes the payload say what the screen shows.
+              //
+              // Sent even when `redditObjectiveIsUnavailable()`, and that is the deliberate half.
+              // The only withheld objective is `video_views`, which the campaign-service arm
+              // refuses outright unless a `videoGoal` accompanies it and nothing in this tier can
+              // set one. So such a create fails upstream rather than succeeding — where omitting
+              // the field would fall back to `conversions` and quietly build a campaign the
+              // operator never chose, against an objective the select is at that moment showing
+              // them as "(no longer available)". A refusal they can see and act on beats a
+              // substitution they cannot. Unreachable today: the signal seeds from
+              // DEFAULT_REDDIT_OBJECTIVE and the picker offers only the selectable three, so the
+              // sole route in is a draft written against a wider set.
+              objective: this.redditObjective(),
+              // Omitted when blank rather than sent empty: upstream treats an empty `postUrl` as
+              // "author a post instead", and an empty `callToAction` as "use the default" — both
+              // the same decision an absent key makes, so a blank string would only add a value
+              // for a reader to misread.
+              ...(this.redditPostUrl() ? { postUrl: this.redditPostUrl() } : {}),
+              // Gated on the capability, not merely on the text, for the reason the Google
+              // creative is: with the cutover dark these two reach a creator that reads neither,
+              // and a create that silently discards them still reports success. The draft keeps
+              // what was typed; only the request drops it.
+              ...(this.redditCreativeAvailable() && this.redditImageUrl() ? { imageUrl: this.redditImageUrl() } : {}),
+              ...(this.redditCreativeAvailable() && this.redditCallToAction() ? { callToAction: this.redditCallToAction() as RedditCallToAction } : {}),
               project: this.briefData()?.eventDetails?.themes?.[0] || undefined,
             },
           }
@@ -2170,6 +2332,23 @@ export class ImplementationTabComponent implements OnInit {
     if (draft.redditBudgetUsd !== undefined) {
       this.redditBudgetUsd.set(draft.redditBudgetUsd);
     }
+    // Restored even when the picker no longer offers it: `redditObjectiveIsUnavailable` renders a
+    // withheld objective as a disabled option, so the stored value stays visible and stays on the
+    // wire rather than being silently replaced by whatever sits at index 0.
+    if (draft.redditObjective !== undefined) {
+      this.redditObjective.set(draft.redditObjective);
+    }
+    // Restored on the same terms, and on `!== undefined` rather than truthiness for the reason the
+    // Microsoft arrays below are: an empty string is a deliberate clear, not an older draft.
+    if (draft.redditPostUrl !== undefined) {
+      this.redditPostUrl.set(draft.redditPostUrl);
+    }
+    if (draft.redditImageUrl !== undefined) {
+      this.redditImageUrl.set(draft.redditImageUrl);
+    }
+    if (draft.redditCallToAction !== undefined) {
+      this.redditCallToAction.set(draft.redditCallToAction);
+    }
 
     // Microsoft (LFXV2-3312), on the same present-only rule. The arrays restore on `!== undefined`
     // rather than on truthiness, which is the whole point: an EMPTY list is a deliberate clear the
@@ -2285,14 +2464,14 @@ export class ImplementationTabComponent implements OnInit {
       // The remaining signal-backed values, on the same terms as the Meta block above: snapshotted
       // rather than referenced, and named explicitly rather than spread.
       //
-      // Scoped to the per-platform BUDGETS, which is the whole of what this snapshot needs to
-      // carry, and the boundary is drawn by asking one question per field: can a user change it?
+      // Scoped by asking one question per field: can a user change it?
       //
-      // These can. The template binds `(input)` and `(change)` on the LinkedIn budget pair,
-      // and `(input)` on the Reddit budget, so an operator types a number the brief did not
-      // recommend and that number exists nowhere but this component. Losing it is the money-shaped
-      // half of LFXV2-3315: the campaign silently reverts to the recommended spend, a decision the
-      // operator did not make and the form does not show them re-making.
+      // These can — each one is bound to a handler in this component's template, so an operator
+      // sets a value the brief did not recommend and that value exists nowhere but this
+      // component. Losing a budget is the money-shaped half of LFXV2-3315: the campaign silently
+      // reverts to the recommended spend, a decision the operator did not make and the form does
+      // not show them re-making. The Reddit objective and post fields fail the same way, buying a
+      // different campaign or none at all.
       //
       // The brief-derived ARRAYS are deliberately NOT here — `metaVariants`, `linkedInVariants`,
       // `redditVariants` and the four Reddit targeting lists. They have no editor: the full set of
@@ -2318,6 +2497,12 @@ export class ImplementationTabComponent implements OnInit {
       linkedInBudgetUsd: this.linkedInBudgetUsd(),
       linkedInLifetimeBudget: this.linkedInLifetimeBudget(),
       redditBudgetUsd: this.redditBudgetUsd(),
+      redditObjective: this.redditObjective(),
+      // Snapshotted whatever `redditCreativeAvailable()` says — see the draft interface for why a
+      // capability must not decide what the draft remembers.
+      redditPostUrl: this.redditPostUrl(),
+      redditImageUrl: this.redditImageUrl(),
+      redditCallToAction: this.redditCallToAction(),
     });
   }
 
@@ -2930,6 +3115,170 @@ export class ImplementationTabComponent implements OnInit {
   }
 
   /**
+   * What a STARTED creative is still missing, in one sentence, or null when none is.
+   *
+   * The companion to {@link googleCreativeEmptyWarning}, and the two split on exactly the line
+   * campaign-service splits on. Each of the three creative validators opens with an `empty()` gate
+   * that ACCEPTS the creative and only then enforces its minimums (`demandgen_creative.go:277`,
+   * `pmax_creative.go:247`, `display_creative.go:169`). So a creative that has nothing in it is a
+   * create upstream makes — blocking it here would be the over-refusal this whole road forbids, and
+   * it gets the warning instead. A creative with something in it but below a minimum is a create
+   * upstream REFUSES, and surfacing that refusal before the round trip can never refuse more than
+   * upstream would.
+   *
+   * Judged on {@link googleCreativePayload} rather than on the controls, so "empty" means exactly
+   * what the wire means: the payload builder omits a field that trims to nothing and omits a
+   * channel whose whole creative is empty, which is the same shape `empty()` tests. Reading the
+   * controls instead would need a second definition of empty to drift against this one.
+   *
+   * A computed rather than control validators, for the reason {@link initGoogleBiddingError}
+   * records: it walks only the sections currently rendered, so a stale value in a withheld channel
+   * can never block a create. `canSubmit` reads it and the template prints it.
+   */
+  private initGoogleCreativeError(): Signal<string | null> {
+    return computed(() => {
+      void this.campaignFormRevision();
+      const payload = this.googleCreativePayload();
+      for (const section of this.googleCreativeSections()) {
+        const creative = payload[section.groupName];
+        // Absent is the wholly-empty case, which upstream accepts — the warning's business, not this.
+        if (creative === undefined) continue;
+        const missing = this.googleCreativeShortfall(section.channel, creative);
+        if (missing !== null) return `${section.label} creative ${missing}`;
+      }
+      return null;
+    });
+  }
+
+  /**
+   * The first minimum a non-empty creative fails, as a clause, or null when it meets them all.
+   *
+   * Three rule kinds, every one of them campaign-service's own and none of them tighter: the
+   * catalogued `min` on a list, the `requiredOnce` scalars Google marks required, and the
+   * either-or pairs no per-field bound can state ({@link GOOGLE_CREATIVE_EITHER_OR_RULES}).
+   * Catalogue order is report order, so the message names the field highest in the section the
+   * operator is looking at.
+   */
+  private googleCreativeShortfall(channel: GoogleCreativeChannel, creative: Record<string, string | string[]>): string | null {
+    // Widened to the interface, as every other reader of the catalogue does: the constant's
+    // `as const` gives each entry a literal type carrying only the keys that entry happens to set,
+    // so `field.min` and `field.requiredOnce` are not readable across the union without this.
+    const fields: readonly GoogleCreativeFieldSpec[] = GOOGLE_CREATIVE_FIELD_SPECS[channel];
+    for (const field of fields) {
+      const value = creative[field.control];
+      if (field.kind === 'text') {
+        // The payload omits a scalar that trims to nothing, so presence IS non-emptiness here.
+        if (field.requiredOnce === true && value === undefined) return `needs a ${field.label.toLowerCase()}.`;
+        continue;
+      }
+      if (field.min === undefined) continue;
+      const count = Array.isArray(value) ? value.length : 0;
+      if (count < field.min) {
+        const entries = field.min === 1 ? 'entry' : 'entries';
+        return `needs at least ${field.min} ${entries} in ${field.label} — ${count} given.`;
+      }
+    }
+    const rules: readonly GoogleCreativeEitherOrRule[] = GOOGLE_CREATIVE_EITHER_OR_RULES[channel];
+    for (const rule of rules) {
+      const satisfied = rule.controls.some((control) => {
+        const value = creative[control];
+        return Array.isArray(value) && value.length > 0;
+      });
+      if (!satisfied) return rule.message;
+    }
+    return null;
+  }
+
+  /**
+   * Which rendered channels would be created with NO creative at all, as one sentence, or null.
+   *
+   * Non-blocking on purpose, and that is the whole point of it. campaign-service accepts this
+   * shape deliberately — `pmax_creative.go`'s `empty()` docblock records why: a campaign with no
+   * asset group is still a real, reconcilable campaign an operator can finish in the Google Ads
+   * UI, and refusing it would also refuse ADOPTION of a campaign that already exists upstream with
+   * its assets built by hand. Demand Gen adds that every campaign created before the feature
+   * existed was that shape. So a guard that blocked here would refuse creates upstream makes.
+   *
+   * But nothing else ever tells the operator at create time, and the create is not the end of it:
+   * on EVERY one of the three channels the refusal simply arrives later, at activation. An empty
+   * creative leaves `AdID` blank (`demandgen.go:326`, `display.go:298`), `googleAdsToggleTargets`
+   * then yields no targets for a campaign with no ad group list, and the activation gate refuses
+   * with `ErrCampaignNotProvisioned` (`internal/dispatch/googleads.go:2561`, `:2687`). Performance
+   * Max reaches the same refusal by its own route, through the asset-group check in `ToggleStatus`
+   * (`internal/platform/googleads/pmax.go`). So the campaign and its budget are created, the call
+   * returns success, and the status toggle will later reject it — a warning beneath the creative
+   * sections is the only place that fact fits.
+   *
+   * Reads the same {@link googleCreativePayload} the blocking check does, so the two agree on what
+   * empty means and no channel can be both empty and short of a minimum.
+   */
+  private initGoogleCreativeEmptyWarning(): Signal<string | null> {
+    return computed(() => {
+      void this.campaignFormRevision();
+      const payload = this.googleCreativePayload();
+      const empty = this.googleCreativeSections().filter((section) => payload[section.groupName] === undefined);
+      if (empty.length === 0) return null;
+      const names = empty.map((section) => section.label).join(' and ');
+      const verb = empty.length === 1 ? 'has' : 'have';
+      const sentence = `${names} ${verb} no creative. The campaign and its budget are still created, but it cannot serve until the assets are added AND the campaign is enabled in Google Ads.`;
+      // Claimed unconditionally because it is true of every empty channel, not just Performance
+      // Max: the activation gate refuses a campaign whose ad never got created just as it refuses
+      // one whose asset group never did.
+      //
+      // "Enabled in Google Ads" rather than "then activate here", because the refusal never
+      // lifts. Both gate inputs come from the persisted `Result` blob — `googleAdsToggleTargets`
+      // (`internal/dispatch/googleads.go:2687`) and `googleAdsToggleAssetGroup` (`:2614`) return
+      // early on an empty `Result`, and the call site states it (`:2083-2089`). Nothing re-reads
+      // Google, so creative added by hand upstream is never discovered here.
+      return `${sentence} Activating it from LFX stays refused even after that, so launch it in Google Ads.`;
+    });
+  }
+
+  /**
+   * That a Reddit create is about to make a campaign with no ad in it, or null when it is not.
+   *
+   * The pre-submit half of a sentence this product only ever said afterwards. The created-campaigns
+   * list already carries `implementation-reddit-no-ad-notice` once `adCount` comes back 0, which is
+   * after the campaign, its ad group and its budget exist and the operator has nothing left to
+   * change. This says the same thing while a post URL can still be typed.
+   *
+   * A warning and not a block, for the reason {@link initGoogleCreativeEmptyWarning} is one: both
+   * creators ACCEPT this shape and report success, so refusing it here would refuse a create the
+   * platform makes. The legacy creator's no-post branch is a documented workflow in its own right —
+   * it writes the variant headlines into `steps` for an operator to paste into Reddit Ads Manager
+   * (`reddit-ads.service.ts`) — and `canSubmit` deliberately does not read this.
+   *
+   * Judged on the two gates the payload itself uses, so the warning can never disagree with what is
+   * sent. `postUrl` goes on both arms and creates the ad on either (`reddit-ads.service.ts`,
+   * `CreateCampaign` in `internal/platform/reddit/client.go`). `imageUrl` authors a post on either too since
+   * #3432, and on both only when no post URL is set — so a typed image now averts this warning,
+   * where before it was withheld and withheld meant no ad. It is still read through
+   * `redditCreativeAvailable()` rather than on its own: with the capability UNANSWERED the payload
+   * drops the image, and a warning that ignored that would promise an ad the request never asks for.
+   */
+  private initRedditNoAdWarning(): Signal<string | null> {
+    return computed(() => {
+      if (!this.showRedditSection()) return null;
+      if (this.redditPostUrl()) return null;
+      if (this.redditCreativeAvailable() && this.redditImageUrl()) return null;
+      // Names only the fields the operator can actually see: with the authored-post controls
+      // withheld, an image URL is not a remedy and telling them to supply one would be advice they
+      // cannot take.
+      const missing = this.redditCreativeAvailable() ? 'No post URL and no image URL' : 'No post URL';
+      // "Will not change that" rather than "stays refused", for the reason the post-submit sibling
+      // was corrected to the same wording in #3451: the clause has to hold on BOTH arms and the
+      // refusal is campaign-service's alone. There activation needs both child ids
+      // (`RedditDispatcher.ToggleStatus` in `internal/dispatch/reddit.go`), taken from
+      // `redditChildIDs` in the same file, which
+      // reads only the persisted Result blob — nothing re-reads Reddit, so an ad attached by hand
+      // is never discovered and the refusal never lifts. The legacy toggle has no ad-existence
+      // guard at all (`campaign-proxy.service.ts`) and goes through to a campaign with nothing to
+      // serve. Either way activating accomplishes nothing, which is what the operator needs to know.
+      return `${missing}, so this campaign is created with no ad: the campaign and its ad group are made and the create reports success, but nothing serves. Activating it from LFX will not change that, so either supply a post above or build and launch the campaign in Reddit Ads Manager.`;
+    });
+  }
+
+  /**
    * The bidding plan as the request carries it, or `{}` when there is nothing to send.
    *
    * Gated by the SAME computeds the template renders, so what the operator can see is exactly what
@@ -2997,11 +3346,13 @@ export class ImplementationTabComponent implements OnInit {
   /**
    * The bounds a creative field is validated against — `max` and `width`, never `min`.
    *
-   * `min` is deliberately absent. campaign-service ACCEPTS a channel with no creative at all, and
-   * a minimum enforced here would refuse a create that upstream would have made: an operator who
-   * wants the campaign and budget now, and the assets later, is doing something the platform
-   * supports. `min` is shown as guidance in the section instead ({@link GOOGLE_CREATIVE_FIELD_SPECS}),
-   * which is where a floor that only applies to a PARTIALLY filled creative belongs.
+   * `min` is deliberately absent, and so is `requiredOnce`. campaign-service ACCEPTS a channel with
+   * no creative at all, and a validator carrying either one would refuse a create that upstream
+   * would have made: an operator who wants the campaign and budget now, and the assets later, is
+   * doing something the platform supports. A control validator cannot tell the two cases apart —
+   * it sees one control and never the group — which is exactly why the floor is enforced at submit
+   * by {@link googleCreativeError}, where the whole creative is in view and the empty one can be
+   * let through.
    *
    * `max` and `width` are the other direction: both are hard upstream bounds, so enforcing them
    * refuses only what Google would have refused anyway — after the campaign already exists, which
@@ -3025,9 +3376,11 @@ export class ImplementationTabComponent implements OnInit {
    * static catalogue entry, so the answer cannot change between two change-detection passes and a
    * method on the render path would be re-deriving a constant.
    *
-   * `min` is stated as guidance only. No validator enforces it ({@link creativeFieldValidators}
-   * explains why), so this line is what tells an operator that a half-filled Performance Max
-   * creative will be refused by Google even though this form will submit it.
+   * `min` is stated here as guidance, and enforced elsewhere: no control validator carries it
+   * ({@link creativeFieldValidators} explains why), but {@link googleCreativeError} refuses a
+   * half-filled creative at submit. This line is what tells the operator the floor exists BEFORE
+   * they run into it — the message beneath the creative sections names one field at a time, and
+   * only after the creative has been started.
    */
   private creativeFieldGuidance(field: GoogleCreativeFieldSpec): string {
     const parts: string[] = [];
@@ -3076,15 +3429,36 @@ export class ImplementationTabComponent implements OnInit {
    * trimmed entries ({@link splitCreativeLines} trims each line); this makes the scalar fields
    * agree with it and with the wire.
    *
-   * Keeps Angular's own `maxlength` error shape — `{ requiredLength, actualLength }` — so the
-   * message in {@link creativeFieldError} reads the same key it always did. `actualLength` reports
-   * the trimmed length, which is the number the bound was actually applied to.
+   * Measured in CODE POINTS, not UTF-16 units, because `String.length` disagrees with BOTH of the
+   * regimes campaign-service measures these widths in on every non-BMP character. Upstream counts
+   * `assetGroupName` and `callToActionText` with `utf8.RuneCountInString` — a straight rune count —
+   * and every other scalar with `textWeight` (`demandgen_creative.go:406`), which sums
+   * `googleAdsCharWeight` per rune and so charges a wide character 2. The two are not the same
+   * number, and this validator matches neither exactly; it does not have to. Every rune weighs at
+   * least 1, so the code-point count is a LOWER BOUND on the display weight and never exceeds the
+   * rune count, which puts this bound on the permissive side of both — it can fail to catch a
+   * refusal upstream will make, which costs a round trip, but it can never refuse a create upstream
+   * would have accepted. `String.length` has no such guarantee: at a width of 30, a 16-emoji
+   * headline is 32 UTF-16 units and 16 runes, so measuring it the JS way refuses a value upstream
+   * counts as 16 and accepts. (15 emoji is exactly 30 units and squeaks through the old check —
+   * the over-refusal starts at the first emoji past half the width.) Same over-refusal the
+   * trimming above exists to avoid, one layer down.
+   * {@link codePointLength} is the shared helper for this and is documented as `len([]rune(s))`;
+   * the Microsoft keyword box documents the same hazard.
+   *
+   * Local rather than the shared `maxCodePointsValidator`, which trims and counts code points
+   * identically, for one reason: that validator reports its own `maxCodePoints` error key, and
+   * every message in {@link creativeFieldError} reads Angular's `maxlength` shape. Keeping
+   * `{ requiredLength, actualLength }` is what lets the width change without touching the error
+   * rendering at all. `actualLength` reports the trimmed code-point count, which is the number the
+   * bound was actually applied to.
    */
   private creativeTextBounds(width: number): ValidatorFn {
     return (control: AbstractControl): ValidationErrors | null => {
       const text = typeof control.value === 'string' ? control.value.trim() : '';
-      if (text.length <= width) return null;
-      return { maxlength: { requiredLength: width, actualLength: text.length } };
+      const length = codePointLength(text);
+      if (length <= width) return null;
+      return { maxlength: { requiredLength: width, actualLength: length } };
     };
   }
 
@@ -3099,7 +3473,7 @@ export class ImplementationTabComponent implements OnInit {
       if (field.max !== undefined && lines.length > field.max) {
         return { creativeListMax: { label: field.label, max: field.max, actual: lines.length } };
       }
-      if (field.width !== undefined && lines.some((line) => line.length > (field.width as number))) {
+      if (field.width !== undefined && lines.some((line) => codePointLength(line) > (field.width as number))) {
         return { creativeListWidth: { label: field.label, width: field.width } };
       }
       return null;

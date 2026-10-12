@@ -3,11 +3,14 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { GoogleCreativeEitherOrRule, GoogleCreativeFieldSpec } from '../interfaces/campaign.interface';
 import {
   isCanonicalGoogleAdsResourceId,
   CAMPAIGN_ALERT_THRESHOLDS,
   CAMPAIGN_EMAIL_TYPES,
   DEFAULT_CAMPAIGN_EMAIL_TYPE_ID,
+  DEFAULT_REDDIT_CALL_TO_ACTION,
+  DEFAULT_REDDIT_OBJECTIVE,
   GOOGLE_ADS_BIDDING_BOUNDS,
   GOOGLE_ADS_CHANNEL_TYPE_ENUMS,
   GOOGLE_ADS_CONVERSION_ACTION_PATTERN,
@@ -21,12 +24,18 @@ import {
   GOOGLE_CAMPAIGN_CHANNELS,
   GOOGLE_CHANNELS_WITH_CREATIVE,
   GOOGLE_CONVERSION_ACTION_CHANNELS,
+  GOOGLE_CREATIVE_EITHER_OR_RULES,
   GOOGLE_CREATIVE_FIELD_SPECS,
   GOOGLE_CREATIVE_REQUEST_KEYS,
   GOOGLE_CREATIVE_SECTION_TITLES,
+  MAX_REDDIT_HEADLINE_LENGTH,
   META_OBJECTIVE_LABELS,
   META_OBJECTIVE_PARAMS,
   META_SELECTABLE_OBJECTIVES,
+  REDDIT_CALL_TO_ACTIONS,
+  REDDIT_OBJECTIVE_LABELS,
+  REDDIT_SELECTABLE_OBJECTIVES,
+  REDDIT_VIDEO_GOALS,
   campaignToggleAction,
   canonicalMicrosoftMatchType,
   isMicrosoftMatchType,
@@ -710,5 +719,134 @@ describe('Google channel enums and creative catalogue', () => {
     const display = GOOGLE_CREATIVE_FIELD_SPECS.display.find((f) => f.control === 'longHeadline');
     expect(pmax?.kind).toBe('list');
     expect(display?.kind).toBe('text');
+  });
+
+  /**
+   * The scalar counterpart of `min`, and the exact set campaign-service refuses a non-empty
+   * creative without: a business name on all three (`demandgen_creative.go`, `pmax_creative.go`,
+   * `display_creative.go`), plus the responsive display ad's single long headline. Marking one
+   * more than that set would refuse a creative Google takes.
+   */
+  it('marks exactly the fields upstream requires once a creative is started', () => {
+    const required = Object.fromEntries(
+      GOOGLE_CHANNELS_WITH_CREATIVE.map((channel) => [
+        channel,
+        (GOOGLE_CREATIVE_FIELD_SPECS[channel] as readonly GoogleCreativeFieldSpec[]).filter((f) => f.requiredOnce === true).map((f) => f.control),
+      ])
+    );
+    expect(required).toEqual({
+      'demand-gen': ['businessName'],
+      'performance-max': ['businessName'],
+      display: ['longHeadline', 'businessName'],
+    });
+  });
+
+  /** `requiredOnce` is the scalar rule; a list states its floor as `min`, which counts entries. */
+  it('never marks a list field required-once', () => {
+    for (const specs of Object.values(GOOGLE_CREATIVE_FIELD_SPECS)) {
+      for (const spec of specs as readonly GoogleCreativeFieldSpec[]) {
+        if (spec.requiredOnce === true) expect(spec.kind).toBe('text');
+      }
+    }
+  });
+
+  /**
+   * Demand Gen and Display require a marketing image OR a square one; Performance Max requires
+   * both separately and so carries no rule. An empty list for Performance Max is the point, not an
+   * omission — a rule there would duplicate the two `min: 1` entries and read as an either-or.
+   */
+  it('states the marketing-image either-or only where upstream states it', () => {
+    expect(GOOGLE_CREATIVE_EITHER_OR_RULES['demand-gen'].map((r) => r.controls)).toEqual([['marketingImages', 'squareMarketingImages']]);
+    expect(GOOGLE_CREATIVE_EITHER_OR_RULES.display.map((r) => r.controls)).toEqual([['marketingImages', 'squareMarketingImages']]);
+    expect(GOOGLE_CREATIVE_EITHER_OR_RULES['performance-max']).toEqual([]);
+  });
+
+  /** Performance Max's independent requirement, which is what makes its empty rule list correct. */
+  it('requires both Performance Max marketing arrays separately', () => {
+    const specs = GOOGLE_CREATIVE_FIELD_SPECS['performance-max'] as readonly GoogleCreativeFieldSpec[];
+    expect(specs.find((f) => f.control === 'marketingImages')?.min).toBe(1);
+    expect(specs.find((f) => f.control === 'squareMarketingImages')?.min).toBe(1);
+  });
+
+  /** Every rule names fields that exist on its own channel, and names at least two of them. */
+  it('points every either-or rule at real list fields of its channel', () => {
+    for (const channel of GOOGLE_CHANNELS_WITH_CREATIVE) {
+      const lists = (GOOGLE_CREATIVE_FIELD_SPECS[channel] as readonly GoogleCreativeFieldSpec[]).filter((f) => f.kind === 'list').map((f) => f.control);
+      for (const rule of GOOGLE_CREATIVE_EITHER_OR_RULES[channel] as readonly GoogleCreativeEitherOrRule[]) {
+        expect(rule.controls.length).toBeGreaterThan(1);
+        for (const control of rule.controls) expect(lists).toContain(control);
+      }
+    }
+  });
+});
+
+/**
+ * Guards on the Reddit values copied from lfx-v2-campaign-service rather than derived here. They
+ * cannot detect upstream drift — only a re-capture does that — but they do pin the invariants
+ * upstream states about its own tables, so a careless edit on this side fails here instead of as
+ * an opaque Reddit 400 at create time.
+ */
+describe('Reddit promoted-post contract', () => {
+  /** Upstream requires this of `defaultRedditCTA`, and a default outside the list is unsendable. */
+  it('keeps the default call to action inside the accepted set', () => {
+    expect(REDDIT_CALL_TO_ACTIONS).toContain(DEFAULT_REDDIT_CALL_TO_ACTION);
+  });
+
+  /**
+   * Upstream keys its CTA table on the UPPER-CASED label for case-insensitive lookup, so two
+   * labels differing only in case would be one entry there and two rows in any control built from
+   * this list. Checking the upper-cased forms catches that; checking the labels alone would not.
+   */
+  it('gives every call to action a distinct case-insensitive label', () => {
+    const upper = REDDIT_CALL_TO_ACTIONS.map((cta) => cta.toUpperCase());
+    expect(new Set(upper).size).toBe(REDDIT_CALL_TO_ACTIONS.length);
+  });
+
+  /** Reddit matches the label exactly once case is folded; a padded one is rejected. */
+  it('sends every call to action trimmed and non-empty', () => {
+    for (const cta of REDDIT_CALL_TO_ACTIONS) {
+      expect(cta).toBe(cta.trim());
+      expect(cta.length).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * The headline cap is `maxRedditHeadlineRunes` upstream, and the only failure mode that matters
+   * is refusing a headline Reddit would have accepted — so an accidental edit DOWNWARD is the one
+   * to catch. Pinned by value because the value is copied, not derived.
+   */
+  it('keeps the headline cap at the length upstream enforces', () => {
+    expect(MAX_REDDIT_HEADLINE_LENGTH).toBe(300);
+  });
+
+  /**
+   * Pinned as a whole set, not by count: Reddit has no bare `VIDEO_VIEWS` goal, so a video-view
+   * campaign must name one of exactly these, and upstream rejects anything else before it creates.
+   */
+  it('offers exactly the video goals upstream accepts', () => {
+    expect([...REDDIT_VIDEO_GOALS]).toEqual(['VIDEO_VIEW_6S', 'VIDEO_VIEW_15S']);
+  });
+
+  /**
+   * The picker's set is a SUBSET of `RedditObjective`, never a value outside it.
+   *
+   * `REDDIT_OBJECTIVE_LABELS` is typed total over `RedditObjective`, so its keys are that type at
+   * runtime — an objective added to the picker without being added to the union would have no
+   * label here, and the control would render a blank row. The types catch that on the constant
+   * itself; this catches it after a cast, which is how the picker list is written.
+   */
+  it('offers only objectives the request type admits', () => {
+    for (const objective of REDDIT_SELECTABLE_OBJECTIVES) {
+      expect(Object.keys(REDDIT_OBJECTIVE_LABELS)).toContain(objective);
+    }
+  });
+
+  /**
+   * And the default is one of them. It seeds the control on a fresh campaign, so a default outside
+   * the picker's set would open every new Reddit campaign on a value shown as
+   * "(no longer available)" and disabled — unchangeable except by picking something else.
+   */
+  it('seeds the picker with an objective the picker offers', () => {
+    expect([...REDDIT_SELECTABLE_OBJECTIVES]).toContain(DEFAULT_REDDIT_OBJECTIVE);
   });
 });

@@ -2362,8 +2362,10 @@ export class ProjectService {
     // failed root means no reliable root group to anchor the frontend's grouping fallback, so
     // Promise.all propagates a root-query rejection instead of returning an incomplete 200
     // (GH-1607 review).
+    // Marked incomplete by any branch the traversal or detail fan-out drops, so callers can tell a partial list.
+    const budget = { remaining: FOUNDATION_DESCENDANT_TRAVERSAL_MAX_NODES, incomplete: false };
     const [subFoundations, rootDetail] = await Promise.all([
-      this.discoverSubFoundations(req, rootProject.uid, rootProject.slug, rootProject.name),
+      this.discoverSubFoundations(req, rootProject.uid, rootProject.slug, rootProject.name, 0, budget),
       this.getFoundationProjectsDetail(rootProject.slug),
     ]);
 
@@ -2395,6 +2397,7 @@ export class ProjectService {
           const tagged = detail.projects.map((project) => ({ ...project, groupFoundationSlug: groupSlug, groupFoundationName: groupName }));
           bucket.set(groupSlug, [...(bucket.get(groupSlug) ?? []), ...tagged]);
         } catch (error) {
+          budget.incomplete = true;
           logger.warning(req, 'get_foundation_projects_detail_grouped', 'Failed to fetch detail for a discovered foundation, omitting its own rows', {
             foundation_slug: slug,
             err: error,
@@ -2441,9 +2444,10 @@ export class ProjectService {
       foundation_slug: foundationSlug,
       group_count: groups.length,
       total_count: totalCount,
+      complete: !budget.incomplete,
     });
 
-    return { groups, totalCount };
+    return { groups, totalCount, complete: !budget.incomplete };
   }
 
   /**
@@ -7926,6 +7930,7 @@ export class ProjectService {
         project_uid: a.project_uid,
         document_source: 'mailing_list' as const,
         document_source_name: mailingListTitle ?? '',
+        document_kind: a.type === 'link' ? ('link' as const) : ('file' as const),
       };
     });
 
@@ -7965,6 +7970,7 @@ export class ProjectService {
       created_at: a.created_at,
       updated_at: a.updated_at,
       document_source: 'meeting' as const,
+      document_kind: a.type === 'link' ? ('link' as const) : ('file' as const),
     }));
 
     const pastAttachmentDocs: ProjectDocument[] = (pastAttachments || []).map((a) => ({
@@ -7976,6 +7982,7 @@ export class ProjectService {
       created_at: a.created_at,
       updated_at: a.updated_at,
       document_source: 'meeting' as const,
+      document_kind: a.type === 'link' ? ('link' as const) : ('file' as const),
     }));
 
     const pastRecordingDocs: ProjectDocument[] = (pastRecordings || []).map((r) => ({
@@ -8665,10 +8672,11 @@ export class ProjectService {
     nearestVisibleSlug: string,
     nearestVisibleName: string,
     depth: number = 0,
-    budget: { remaining: number } = { remaining: FOUNDATION_DESCENDANT_TRAVERSAL_MAX_NODES },
+    budget: { remaining: number; incomplete: boolean } = { remaining: FOUNDATION_DESCENDANT_TRAVERSAL_MAX_NODES, incomplete: false },
     gate: { active: number; queue: (() => void)[] } = { active: 0, queue: [] }
   ): Promise<{ uid: string; slug: string; name: string; visible: boolean; groupSlug: string; groupName: string }[]> {
     if (depth >= FOUNDATION_DESCENDANT_TRAVERSAL_MAX_DEPTH) {
+      budget.incomplete = true;
       logger.warning(req, 'discover_sub_foundations', 'Hit max traversal depth, stopping this branch', {
         parent_uid: parentUid,
         depth,
@@ -8693,6 +8701,7 @@ export class ProjectService {
         // .catch() below turns into a clean "stop this branch" rather than a silent undercount.
         { failOnPartial: true }
       ).catch((error) => {
+        budget.incomplete = true;
         logger.warning(req, 'discover_sub_foundations', 'Failed to resolve children, stopping traversal at this branch', {
           parent_uid: parentUid,
           depth,
@@ -8714,6 +8723,7 @@ export class ProjectService {
     const results = await Promise.all(
       traversalCandidates.map(async (child) => {
         if (budget.remaining <= 0) {
+          budget.incomplete = true;
           logger.warning(req, 'discover_sub_foundations', 'Hit max discovered sub-foundation count, stopping traversal', {
             parent_uid: parentUid,
             depth,
