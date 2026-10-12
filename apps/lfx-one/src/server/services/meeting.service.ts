@@ -1511,7 +1511,7 @@ export class MeetingService {
    * A past meeting's per-artifact access levels (E4-04), from its `v1_past_meeting` query-service
    * document. The ITX past-meeting read does not carry them (only `artifact_visibility`, which is the
    * recording's level), while the index document holds all three, each as upstream FGA enforces it.
-   * Null when there is no document, which the caller must treat as not public.
+   * Null when no document with this id is found, which the caller must treat as not public.
    */
   public async getPastMeetingArtifactAccessLevels(
     req: Request,
@@ -1529,7 +1529,9 @@ export class MeetingService {
       options
     );
 
-    const record = resources?.[0]?.data;
+    // Only the document of this past meeting: its levels decide what an anonymous caller may read, so
+    // a tag match that returned any other document fails closed rather than lending its levels.
+    const record = resources?.find((resource) => resource.data?.id === pastMeetingUid)?.data;
     if (!record) {
       logger.debug(req, 'get_past_meeting_artifact_access_levels', 'No past meeting document found', { past_meeting_id: pastMeetingUid });
       return null;

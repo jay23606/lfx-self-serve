@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ArtifactVisibility, MeetingVisibility } from '../enums';
-import { EnrichedPastMeetingParticipant, PastMeeting, PastMeetingRecording, RecordingFile, RecordingSession } from '../interfaces';
+import { EnrichedPastMeetingParticipant, PastMeeting, PastMeetingRecording, PastMeetingTranscript, RecordingFile, RecordingSession } from '../interfaces';
 import {
   filterPastMeetingParticipants,
   formatRecordingDuration,
@@ -15,7 +15,9 @@ import {
   getRecordingDurationSeconds,
   isPastMeetingArtifactPublic,
   isPastMeetingCalendarRow,
+  toPublicPastMeetingRecording,
   toPublicPastMeetingRoster,
+  toPublicPastMeetingTranscript,
 } from './past-meeting.utils';
 
 /** Builds an EnrichedPastMeetingParticipant fixture, defaulting every field so tests set only what they assert on. */
@@ -426,5 +428,54 @@ describe('toPublicPastMeetingRoster', () => {
     ]);
     expect(JSON.stringify(roster)).not.toContain('ada@example.com');
     expect(JSON.stringify(roster)).not.toContain('Engineer');
+  });
+});
+
+describe('public recording and transcript allowlists (E4-04)', () => {
+  const file = {
+    id: 'f1',
+    download_url: 'https://zoom.example/dl',
+    play_url: 'https://zoom.example/play',
+    file_size: 10,
+    file_type: 'MP4',
+    recording_type: 'shared_screen',
+    recording_start: '',
+    recording_end: '',
+    status: 'completed',
+    platform_meeting_id: 'z-1',
+  };
+  const session = { start_time: '', share_url: 'https://zoom.example/share', total_size: 10, uuid: 'u-1' };
+  // Upstream documents carry host and audit identities the typed interface does not list.
+  const leaky = { host_email: 'host@example.com', host_id: 'h-1', created_by: { email: 'creator@example.com' } };
+
+  it('keeps what the page plays and measures, and nothing upstream adds', () => {
+    const recording = {
+      uid: 'rec-1',
+      past_meeting_id: 'pm-1',
+      platform: 'Zoom',
+      platform_meeting_id: 'z-1',
+      recording_count: 1,
+      recording_files: [{ ...file, ...leaky }],
+      sessions: [{ ...session, ...leaky }],
+      total_size: 10,
+      duration_seconds: 60,
+      created_at: '',
+      updated_at: '',
+      ...leaky,
+    } as PastMeetingRecording;
+
+    const result = toPublicPastMeetingRecording(recording);
+
+    expect(result.recording_files).toEqual([file]);
+    expect(result.sessions).toEqual([session]);
+    expect(result.duration_seconds).toBe(60);
+    expect(JSON.stringify(result)).not.toMatch(/host@example.com|creator@example.com|h-1/);
+  });
+
+  it('allowlists the transcript record the same way', () => {
+    const result = toPublicPastMeetingTranscript({ id: 't-1', title: 'TSC', recording_files: [{ ...file, ...leaky }], ...leaky } as PastMeetingTranscript);
+
+    expect(result.recording_files).toEqual([file]);
+    expect(JSON.stringify(result)).not.toMatch(/host@example.com|creator@example.com|h-1/);
   });
 });

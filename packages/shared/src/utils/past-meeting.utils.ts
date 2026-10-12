@@ -14,8 +14,10 @@ import {
   PastMeetingArtifactKind,
   PastMeetingParticipant,
   PastMeetingRecording,
+  PastMeetingTranscript,
   PastParticipantFilters,
   PublicPastMeetingRoster,
+  RecordingFile,
   RecordingSession,
 } from '../interfaces';
 import { firstValidTimestampMs } from './iso-timestamp.utils';
@@ -175,6 +177,60 @@ export function isPastMeetingArtifactPublic(
   return (
     meeting.visibility === MeetingVisibility.PUBLIC && !meeting.restricted && meeting[PAST_MEETING_ARTIFACT_ACCESS_FIELDS[kind]] === ArtifactVisibility.PUBLIC
   );
+}
+
+/** A recording file with only the fields a viewer needs, for the public routes (E4-04). */
+function toPublicRecordingFile(file: RecordingFile): RecordingFile {
+  return {
+    id: file.id,
+    download_url: file.download_url,
+    play_url: file.play_url,
+    file_size: file.file_size,
+    file_type: file.file_type,
+    recording_type: file.recording_type,
+    recording_start: file.recording_start,
+    recording_end: file.recording_end,
+    status: file.status,
+    platform_meeting_id: file.platform_meeting_id,
+  };
+}
+
+/** A recording session with only the fields a viewer needs, for the public routes (E4-04). */
+function toPublicRecordingSession(session: RecordingSession): RecordingSession {
+  return { start_time: session.start_time, share_url: session.share_url, total_size: session.total_size, uuid: session.uuid };
+}
+
+/**
+ * A recording as the public past-meeting route gives it to a caller with no session (E4-04): an
+ * allowlist of what the page plays and measures, so nothing upstream adds to the document (host
+ * identity, audit users) reaches an anonymous caller.
+ */
+export function toPublicPastMeetingRecording(recording: PastMeetingRecording): PastMeetingRecording {
+  return {
+    uid: recording.uid,
+    past_meeting_id: recording.past_meeting_id,
+    platform: recording.platform,
+    platform_meeting_id: recording.platform_meeting_id,
+    recording_count: recording.recording_count,
+    recording_files: (recording.recording_files ?? []).map(toPublicRecordingFile),
+    sessions: (recording.sessions ?? []).map(toPublicRecordingSession),
+    total_size: recording.total_size,
+    duration_seconds: recording.duration_seconds,
+    created_at: recording.created_at,
+    updated_at: recording.updated_at,
+  };
+}
+
+/** A transcript record as the public route gives it to a caller with no session (E4-04): an allowlist, as for the recording. */
+export function toPublicPastMeetingTranscript(transcript: PastMeetingTranscript): PastMeetingTranscript {
+  return {
+    id: transcript.id,
+    meeting_id: transcript.meeting_id,
+    meeting_and_occurrence_id: transcript.meeting_and_occurrence_id,
+    title: transcript.title,
+    recording_files: transcript.recording_files?.map(toPublicRecordingFile),
+    sessions: transcript.sessions?.map(toPublicRecordingSession),
+  };
 }
 
 /**

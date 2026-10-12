@@ -66,6 +66,8 @@ describe('toPublicPastMeetingSummary', () => {
       zoom_config: { meeting_id: 'z-1', meeting_uuid: 'u-1' },
       created_at: '',
       updated_at: '',
+      // A field upstream may add later, which an allowlist must not forward.
+      created_by: { email: 'creator@example.com' },
     } as PastMeetingSummary;
 
     const result = toPublicPastMeetingSummary(summary);
@@ -76,6 +78,7 @@ describe('toPublicPastMeetingSummary', () => {
     expect(result.email_sent).toBe(false);
     expect('zoom_config' in result).toBe(false);
     expect(JSON.stringify(result)).not.toContain('zoom-secret');
+    expect(JSON.stringify(result)).not.toContain('creator@example.com');
     expect(summary.password).toBe('zoom-secret');
   });
 });

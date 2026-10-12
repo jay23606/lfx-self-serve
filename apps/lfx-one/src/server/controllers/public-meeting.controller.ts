@@ -27,8 +27,10 @@ import {
   isPastMeetingArtifactPublic,
   isPastMeetingSummaryAwaitingApproval,
   joinAsSentenceList,
+  toPublicPastMeetingRecording,
   toPublicPastMeetingRoster,
   toPublicPastMeetingSummary,
+  toPublicPastMeetingTranscript,
   truncateToUtf16Units,
 } from '@lfx-one/shared/utils';
 import { NextFunction, Request, Response } from 'express';
@@ -372,22 +374,26 @@ export class PublicMeetingController {
 
   /**
    * GET /public/api/meetings/past/:id/recording — the past meeting's recording for the public page
-   * (E4-04, FR-028). See {@link resolvePublicPastArtifact} for who may read it.
+   * (E4-04, FR-028). See {@link resolvePublicPastArtifact} for who may read it. A caller with no
+   * session gets an allowlist (`toPublicPastMeetingRecording`), never upstream's host or audit identities.
    */
   public async getPublicPastMeetingRecording(req: Request, res: Response, next: NextFunction): Promise<void> {
-    await this.sendPublicPastArtifact(req, res, next, 'recording', 'get_public_past_meeting_recording', (resourceId, options) =>
-      this.meetingService.getPastMeetingRecording(req, resourceId, options)
-    );
+    await this.sendPublicPastArtifact(req, res, next, 'recording', 'get_public_past_meeting_recording', async (resourceId, options) => {
+      const recording = await this.meetingService.getPastMeetingRecording(req, resourceId, options);
+      // Signed in (no options): what upstream returned for the caller's own token; anonymous: an allowlist.
+      return options && recording ? toPublicPastMeetingRecording(recording) : recording;
+    });
   }
 
   /**
    * GET /public/api/meetings/past/:id/transcript — the past meeting's transcript record, behind the
-   * same gate as {@link getPublicPastMeetingRecording}.
+   * same gate and with the same allowlist for a caller with no session as {@link getPublicPastMeetingRecording}.
    */
   public async getPublicPastMeetingTranscript(req: Request, res: Response, next: NextFunction): Promise<void> {
-    await this.sendPublicPastArtifact(req, res, next, 'transcript', 'get_public_past_meeting_transcript', (resourceId, options) =>
-      this.meetingService.getPastMeetingTranscript(req, resourceId, options)
-    );
+    await this.sendPublicPastArtifact(req, res, next, 'transcript', 'get_public_past_meeting_transcript', async (resourceId, options) => {
+      const transcript = await this.meetingService.getPastMeetingTranscript(req, resourceId, options);
+      return options && transcript ? toPublicPastMeetingTranscript(transcript) : transcript;
+    });
   }
 
   /**
@@ -403,7 +409,7 @@ export class PublicMeetingController {
   /**
    * GET /public/api/meetings/past/:id/summary — the AI summary. A summary awaiting approval is the
    * organizer's alone upstream, so a caller with no session never gets one (404, as for no summary),
-   * and gets a public one without the Zoom document link, its password or config
+   * and gets a public one as an allowlist without the Zoom document link, its password or config
    * (`toPublicPastMeetingSummary`).
    */
   public async getPublicPastMeetingSummary(req: Request, res: Response, next: NextFunction): Promise<void> {

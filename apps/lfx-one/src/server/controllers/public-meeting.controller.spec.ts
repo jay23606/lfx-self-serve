@@ -96,6 +96,8 @@ vi.mock('@lfx-one/shared/utils', async () => ({
   toPublicPastMeetingRoster: (await import('@lfx-one/shared/utils/past-meeting.utils')).toPublicPastMeetingRoster,
   isPastMeetingSummaryAwaitingApproval: (await import('@lfx-one/shared/utils/past-meeting-summary.utils')).isPastMeetingSummaryAwaitingApproval,
   toPublicPastMeetingSummary: (await import('@lfx-one/shared/utils/past-meeting-summary.utils')).toPublicPastMeetingSummary,
+  toPublicPastMeetingRecording: (await import('@lfx-one/shared/utils/past-meeting.utils')).toPublicPastMeetingRecording,
+  toPublicPastMeetingTranscript: (await import('@lfx-one/shared/utils/past-meeting.utils')).toPublicPastMeetingTranscript,
 }));
 // The deep-imported shared meeting-privacy module reads HOST_KEY_* from this barrel; stub it so
 // the full constants module graph (which re-imports shared/enums for ArtifactVisibility etc.) doesn't load.
@@ -1652,7 +1654,14 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   it('gives a caller with no session a public artifact of a public, unrestricted meeting, read with the M2M token', async () => {
     meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
     levels({ recording_access: ArtifactVisibility.PUBLIC });
-    meetingSvc.getPastMeetingRecording.mockResolvedValue({ uid: 'rec-1' });
+    // Upstream's document carries host and audit identities; the anonymous response must not.
+    meetingSvc.getPastMeetingRecording.mockResolvedValue({
+      uid: 'rec-1',
+      recording_files: [],
+      sessions: [],
+      host_email: 'host@example.com',
+      created_by: { email: 'creator@example.com' },
+    });
     const { req, res, next } = buildReqRes(false, false);
 
     await controller.getPublicPastMeetingRecording(req, res, next);
@@ -1660,7 +1669,8 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
     expect(meetingSvc.getPastMeetingById).toHaveBeenCalledWith(req, MEETING_ID, { bearerToken: 'm2m-token' });
     expect(meetingSvc.getPastMeetingArtifactAccessLevels).toHaveBeenCalledWith(req, MEETING_ID, { bearerToken: 'm2m-token' });
     expect(meetingSvc.getPastMeetingRecording).toHaveBeenCalledWith(req, RESOURCE_ID, { bearerToken: 'm2m-token' });
-    expect(res.json).toHaveBeenCalledWith({ uid: 'rec-1' });
+    expect(res.json.mock.calls[0][0]).toMatchObject({ uid: 'rec-1', recording_files: [], sessions: [] });
+    expect(JSON.stringify(res.json.mock.calls[0][0])).not.toMatch(/host@example.com|creator@example.com/);
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(req.bearerToken).toBeUndefined();
     expect(next).not.toHaveBeenCalled();
@@ -1710,7 +1720,7 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   it("reads with a signed-in caller's own token, so upstream decides, whatever the access level", async () => {
     meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
     levels({ transcript_access: ArtifactVisibility.MEETING_HOSTS });
-    meetingSvc.getPastMeetingTranscript.mockResolvedValue({ uid: 'tr-1' });
+    meetingSvc.getPastMeetingTranscript.mockResolvedValue({ uid: 'tr-1', host_email: 'host@example.com' });
     const { req, res, next } = buildReqRes(true);
 
     await controller.getPublicPastMeetingTranscript(req, res, next);
@@ -1718,7 +1728,8 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
     expect(meetingSvc.getPastMeetingTranscript).toHaveBeenCalledWith(req, RESOURCE_ID, undefined);
     expect(meetingSvc.getPastMeetingArtifactAccessLevels).not.toHaveBeenCalled();
     expect(req.bearerToken).toBe('user-token');
-    expect(res.json).toHaveBeenCalledWith({ uid: 'tr-1' });
+    // Signed in: exactly what upstream returned for the caller's own token.
+    expect(res.json).toHaveBeenCalledWith({ uid: 'tr-1', host_email: 'host@example.com' });
   });
 
   it('treats a session whose user token could not be refreshed as no session', async () => {

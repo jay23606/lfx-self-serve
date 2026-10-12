@@ -65,12 +65,30 @@ export function getPastMeetingSummaryContent(summary: Pick<PastMeetingSummary, '
 }
 
 /**
- * A summary as the public past-meeting route gives it to a caller with no session (E4-04): the text,
- * title, times and approval flags, without the Zoom summary document link and its password, the
- * Zoom configuration, or the internal email flag.
+ * A summary as the public past-meeting route gives it to a caller with no session (E4-04): an
+ * allowlist of the text, title, times and approval flags. Never the Zoom summary document link or
+ * its password, the Zoom configuration, the internal email flag, or anything upstream adds later.
  */
 export function toPublicPastMeetingSummary(summary: PastMeetingSummary): PastMeetingSummary {
-  const publicSummary: PastMeetingSummary = { ...summary, password: '', email_sent: false, summary_data: { ...summary.summary_data, doc_url: '' } };
-  delete publicSummary.zoom_config;
-  return publicSummary;
+  const data = summary.summary_data;
+  return {
+    uid: summary.uid,
+    meeting_id: summary.meeting_id,
+    past_meeting_id: summary.past_meeting_id,
+    platform: summary.platform,
+    approved: summary.approved,
+    requires_approval: summary.requires_approval,
+    email_sent: false,
+    password: '',
+    summary_data: {
+      title: data?.title ?? '',
+      content: data?.content ?? '',
+      edited_content: data?.edited_content ?? '',
+      doc_url: '',
+      start_time: data?.start_time ?? '',
+      end_time: data?.end_time ?? '',
+    },
+    created_at: summary.created_at,
+    updated_at: summary.updated_at,
+  };
 }
