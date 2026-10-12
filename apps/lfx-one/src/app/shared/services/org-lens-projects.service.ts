@@ -10,7 +10,6 @@ import type {
   OrgProjectsWorkspace,
   OrgProjectsWorkspacesResponse,
 } from '@lfx-one/shared/interfaces';
-import { mapV1BandToV2 } from '@lfx-one/shared/utils';
 import { map, Observable } from 'rxjs';
 
 @Injectable({
@@ -25,14 +24,13 @@ export class OrgLensProjectsService {
       params = params.set('slugs', slugs.join(','));
     }
     return this.http.get<OrgLensProjectsResponse>(`/api/orgs/${encodeURIComponent(orgUid)}/lens/projects`, { params }).pipe(
-      // Normalizes legacy v1 band names (stable/unsteady) a rolling-deploy old BFF may still emit, so the frontend never
-      // sees them; a pre-v2-breakdown BFF also emits a band without `healthOverallScore`, which the badge must treat as
+      // A pre-v2-breakdown BFF emits a band without `healthOverallScore`, which the badge must treat as
       // unavailable so it agrees with the popup and accessible name.
       map((response) => ({
         ...response,
         projects: response.projects.map((project) => ({
           ...project,
-          health: project.healthOverallScore == null ? ('unavailable' as HealthScore) : (mapV1BandToV2(project.health) as HealthScore),
+          health: project.healthOverallScore == null ? ('unavailable' as HealthScore) : project.health,
         })),
       }))
     );
