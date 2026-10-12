@@ -137,8 +137,8 @@ export class PersonaDetectionService {
     const needsCampaignManager = marketingOpsFgaEnabled && (marketingRelations === 'both' || marketingRelations === 'campaign_manager');
     // isMarketingAuditorRootGrant reuses checkRootMarketingAuditor's per-request WeakMap cache (see
     // below), so it adds no round trip. isCampaignManagerRootGrant is always false: the frontend treats
-    // a true value as a grant on every project, and no campaign-manager grant cascades from ROOT now
-    // that `marketing_ops` is gone from the model.
+    // a true value as a grant on every project, and no campaign-manager grant cascades from ROOT once
+    // the ROOT `marketing_ops` team tuple is removed, which this change assumes.
     const [detections, isRootWriter, isLFStaff, isAuditor, isMarketingAuditor, isCampaignManager, isMarketingAuditorRootGrant] = await Promise.all([
       this.getPersonaDetections(req, username, email, cacheKey),
       this.checkRootWriter(req),

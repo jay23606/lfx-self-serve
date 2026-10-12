@@ -90,8 +90,9 @@ export interface PersonaApiResponse extends PersonaDetections {
    */
   isMarketingAuditorRootGrant: boolean;
   /**
-   * Always `false`: the cascading ROOT `marketing_ops` grant this reported is gone from the model, and
-   * ROOT `global_marketing_ops` does not cascade. Kept so the frontend contract is unchanged.
+   * Always `false`: this no longer reads the cascading ROOT `marketing_ops` grant it used to report,
+   * whose ROOT tuple is removed before this ships, and ROOT `global_marketing_ops` does not cascade.
+   * Kept so the frontend contract is unchanged.
    */
   isCampaignManagerRootGrant: boolean;
 }
