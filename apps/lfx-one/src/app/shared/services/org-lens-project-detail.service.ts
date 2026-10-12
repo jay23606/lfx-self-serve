@@ -38,7 +38,7 @@ export class OrgLensProjectDetailService {
     }
     return this.blockGet<OrgLensHeroBlock>(`${this.baseUrl(orgUid, projectSlug)}/hero`, { orgName }).pipe(
       map((block) => {
-        // A band without `healthOverallScore` (pre-v2-breakdown BFF) is unavailable so badge and popup agree.
+        // Mirrors the BFF rule: no `healthOverallScore` means no band, so badge and popup agree.
         const health = block?.hero.health && block.hero.healthOverallScore != null ? block.hero.health : null;
         const normalized = block ? { ...block, hero: { ...block.hero, health } } : block;
         if (this.heroCache.size >= OrgLensProjectDetailService.maxHeroEntries) {

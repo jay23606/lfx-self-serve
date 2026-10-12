@@ -18,7 +18,7 @@ export class OrgLensProjectsService {
       params = params.set('slugs', slugs.join(','));
     }
     return this.http.get<OrgLensProjectsResponse>(`/api/orgs/${encodeURIComponent(orgUid)}/lens/projects`, { params }).pipe(
-      // A pre-v2-breakdown BFF emits a band without `healthOverallScore`; treat it as unavailable so the badge agrees with the popup.
+      // Mirrors the BFF rule: no `healthOverallScore` means unavailable, so badge and popup agree.
       map((response) => ({
         ...response,
         projects: response.projects.map((project) => ({
