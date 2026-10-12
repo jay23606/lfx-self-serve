@@ -54,6 +54,7 @@ const {
     getPastMeetingTranscript: vi.fn(),
     getPastMeetingTranscriptContent: vi.fn(),
     getPastMeetingSummary: vi.fn(),
+    getPastMeetingArtifactAccessLevels: vi.fn(),
     getPastOccurrencesForMeeting: vi.fn(),
     addMeetingRegistrantSelf: vi.fn(),
     getMeetingAttachments: vi.fn(),
@@ -94,6 +95,7 @@ vi.mock('@lfx-one/shared/utils', async () => ({
   isPastMeetingArtifactPublic: (await import('@lfx-one/shared/utils/past-meeting.utils')).isPastMeetingArtifactPublic,
   toPublicPastMeetingRoster: (await import('@lfx-one/shared/utils/past-meeting.utils')).toPublicPastMeetingRoster,
   isPastMeetingSummaryAwaitingApproval: (await import('@lfx-one/shared/utils/past-meeting-summary.utils')).isPastMeetingSummaryAwaitingApproval,
+  toPublicPastMeetingSummary: (await import('@lfx-one/shared/utils/past-meeting-summary.utils')).toPublicPastMeetingSummary,
 }));
 // The deep-imported shared meeting-privacy module reads HOST_KEY_* from this barrel; stub it so
 // the full constants module graph (which re-imports shared/enums for ArtifactVisibility etc.) doesn't load.
@@ -1635,7 +1637,10 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   const RESOURCE_ID = 'meeting-orig-1111-1700000000000';
   let controller: PublicMeetingController;
 
+  // The ITX read carries visibility / restricted; the per-artifact levels come from the query-service document.
   const pastMeeting = (overrides: Partial<PastMeeting> = {}): PastMeeting => buildPastMeeting({ meeting_and_occurrence_id: RESOURCE_ID, ...overrides });
+  const levels = (fields: Partial<Pick<PastMeeting, 'recording_access' | 'transcript_access' | 'ai_summary_access'>>) =>
+    meetingSvc.getPastMeetingArtifactAccessLevels.mockResolvedValue(fields);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1645,13 +1650,15 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   });
 
   it('gives a caller with no session a public artifact of a public, unrestricted meeting, read with the M2M token', async () => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ recording_access: ArtifactVisibility.PUBLIC }));
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ recording_access: ArtifactVisibility.PUBLIC });
     meetingSvc.getPastMeetingRecording.mockResolvedValue({ uid: 'rec-1' });
     const { req, res, next } = buildReqRes(false, false);
 
     await controller.getPublicPastMeetingRecording(req, res, next);
 
     expect(meetingSvc.getPastMeetingById).toHaveBeenCalledWith(req, MEETING_ID, { bearerToken: 'm2m-token' });
+    expect(meetingSvc.getPastMeetingArtifactAccessLevels).toHaveBeenCalledWith(req, MEETING_ID, { bearerToken: 'm2m-token' });
     expect(meetingSvc.getPastMeetingRecording).toHaveBeenCalledWith(req, RESOURCE_ID, { bearerToken: 'm2m-token' });
     expect(res.json).toHaveBeenCalledWith({ uid: 'rec-1' });
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
@@ -1660,13 +1667,14 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   });
 
   it.each([
-    ['the artifact is for participants', { recording_access: ArtifactVisibility.MEETING_PARTICIPANTS }],
-    ['the artifact is for hosts', { recording_access: ArtifactVisibility.MEETING_HOSTS }],
-    ['no access level is set (participants by default)', {}],
-    ['the meeting is restricted', { recording_access: ArtifactVisibility.PUBLIC, restricted: true }],
-    ['the meeting is private', { recording_access: ArtifactVisibility.PUBLIC, visibility: MeetingVisibility.PRIVATE }],
-  ])('answers 401 to a caller with no session when %s', async (_label, overrides) => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting(overrides as Partial<PastMeeting>));
+    ['the artifact is for participants', {}, { recording_access: ArtifactVisibility.MEETING_PARTICIPANTS }],
+    ['the artifact is for hosts', {}, { recording_access: ArtifactVisibility.MEETING_HOSTS }],
+    ['no access level is set', {}, {}],
+    ['the meeting is restricted', { restricted: true }, { recording_access: ArtifactVisibility.PUBLIC }],
+    ['the meeting is private', { visibility: MeetingVisibility.PRIVATE }, { recording_access: ArtifactVisibility.PUBLIC }],
+  ])('answers 401 to a caller with no session when %s', async (_label, meetingFields, levelFields) => {
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting(meetingFields as Partial<PastMeeting>));
+    levels(levelFields);
     const { req, res, next } = buildReqRes(false, false);
 
     await controller.getPublicPastMeetingRecording(req, res, next);
@@ -1676,20 +1684,46 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
     expect(res.json).not.toHaveBeenCalled();
   });
 
+  // The ITX read's artifact_visibility is the recording's level; it never stands in for the others.
+  it.each(['transcript', 'summary'] as const)("answers 401 for the %s when only the ITX record's artifact_visibility is public", async (kind) => {
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ artifact_visibility: ArtifactVisibility.PUBLIC }));
+    levels({ recording_access: ArtifactVisibility.PUBLIC });
+    const { req, res, next } = buildReqRes(false, false);
+
+    await (kind === 'summary' ? controller.getPublicPastMeetingSummary(req, res, next) : controller.getPublicPastMeetingTranscript(req, res, next));
+
+    expect(next).toHaveBeenCalledWith(expect.any(AuthenticationError));
+    expect(meetingSvc.getPastMeetingSummary).not.toHaveBeenCalled();
+    expect(meetingSvc.getPastMeetingTranscript).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 to a caller with no session when the past meeting has no query-service document', async () => {
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    meetingSvc.getPastMeetingArtifactAccessLevels.mockResolvedValue(null);
+    const { req, res, next } = buildReqRes(false, false);
+
+    await controller.getPublicPastMeetingRecording(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.any(AuthenticationError));
+  });
+
   it("reads with a signed-in caller's own token, so upstream decides, whatever the access level", async () => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ transcript_access: ArtifactVisibility.MEETING_HOSTS }));
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ transcript_access: ArtifactVisibility.MEETING_HOSTS });
     meetingSvc.getPastMeetingTranscript.mockResolvedValue({ uid: 'tr-1' });
     const { req, res, next } = buildReqRes(true);
 
     await controller.getPublicPastMeetingTranscript(req, res, next);
 
     expect(meetingSvc.getPastMeetingTranscript).toHaveBeenCalledWith(req, RESOURCE_ID, undefined);
+    expect(meetingSvc.getPastMeetingArtifactAccessLevels).not.toHaveBeenCalled();
     expect(req.bearerToken).toBe('user-token');
     expect(res.json).toHaveBeenCalledWith({ uid: 'tr-1' });
   });
 
   it('treats a session whose user token could not be refreshed as no session', async () => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ transcript_access: ArtifactVisibility.MEETING_PARTICIPANTS }));
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ transcript_access: ArtifactVisibility.MEETING_PARTICIPANTS });
     const { req, res, next } = buildReqRes(true, false);
 
     await controller.getPublicPastMeetingTranscript(req, res, next);
@@ -1699,9 +1733,8 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   });
 
   it("gates the transcript text on the transcript's access level", async () => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(
-      pastMeeting({ transcript_access: ArtifactVisibility.PUBLIC, recording_access: ArtifactVisibility.MEETING_HOSTS })
-    );
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ transcript_access: ArtifactVisibility.PUBLIC, recording_access: ArtifactVisibility.MEETING_HOSTS });
     meetingSvc.getPastMeetingTranscriptContent.mockResolvedValue({ content: 'WEBVTT' });
     const { req, res, next } = buildReqRes(false, false);
 
@@ -1712,19 +1745,21 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   });
 
   it('answers 404 when there is no such artifact', async () => {
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ recording_access: ArtifactVisibility.PUBLIC }));
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ recording_access: ArtifactVisibility.PUBLIC });
     meetingSvc.getPastMeetingRecording.mockResolvedValue(null);
     const { req, res, next } = buildReqRes(false, false);
 
     await controller.getPublicPastMeetingRecording(req, res, next);
 
-    expect(res.status).toHaveBeenCalledWith(404);
-    expect(next).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+    expect(res.json).not.toHaveBeenCalled();
   });
 
   it('hands an upstream failure to the error handler', async () => {
     const failure = new Error('upstream down');
-    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ recording_access: ArtifactVisibility.PUBLIC }));
+    meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+    levels({ recording_access: ArtifactVisibility.PUBLIC });
     meetingSvc.getPastMeetingRecording.mockRejectedValue(failure);
     const { req, res, next } = buildReqRes(false, false);
 
@@ -1734,31 +1769,47 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
   });
 
   describe('summary', () => {
-    const summary = (approved: boolean, requiresApproval: boolean) => ({ uid: 'sum-1', approved, requires_approval: requiresApproval });
+    const summary = (approved: boolean, requiresApproval: boolean) => ({
+      uid: 'sum-1',
+      approved,
+      requires_approval: requiresApproval,
+      email_sent: true,
+      password: 'zoom-secret',
+      zoom_config: { meeting_id: 'z-1', meeting_uuid: 'u-1' },
+      summary_data: { title: 'Summary', content: 'Text', edited_content: '', doc_url: 'https://docs.zoom.example/s/1', start_time: '', end_time: '' },
+    });
 
     it('never gives a caller with no session a summary awaiting approval', async () => {
-      meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ ai_summary_access: ArtifactVisibility.PUBLIC }));
+      meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+      levels({ ai_summary_access: ArtifactVisibility.PUBLIC });
       meetingSvc.getPastMeetingSummary.mockResolvedValue(summary(false, true));
       const { req, res, next } = buildReqRes(false, false);
 
       await controller.getPublicPastMeetingSummary(req, res, next);
 
-      expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).not.toHaveBeenCalledWith(expect.objectContaining({ uid: 'sum-1' }));
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+      expect(res.json).not.toHaveBeenCalled();
     });
 
     it.each([
       [true, true],
       [false, false],
-    ])('gives a caller with no session a public summary (approved=%s, requires_approval=%s)', async (approved, requiresApproval) => {
-      meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting({ ai_summary_access: ArtifactVisibility.PUBLIC }));
-      meetingSvc.getPastMeetingSummary.mockResolvedValue(summary(approved, requiresApproval));
-      const { req, res, next } = buildReqRes(false, false);
+    ])(
+      'gives a caller with no session a public summary without the Zoom document credentials (approved=%s, requires_approval=%s)',
+      async (approved, requiresApproval) => {
+        meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
+        levels({ ai_summary_access: ArtifactVisibility.PUBLIC });
+        meetingSvc.getPastMeetingSummary.mockResolvedValue(summary(approved, requiresApproval));
+        const { req, res, next } = buildReqRes(false, false);
 
-      await controller.getPublicPastMeetingSummary(req, res, next);
+        await controller.getPublicPastMeetingSummary(req, res, next);
 
-      expect(res.json).toHaveBeenCalledWith(summary(approved, requiresApproval));
-    });
+        const body = res.json.mock.calls[0][0];
+        expect(body).toMatchObject({ uid: 'sum-1', approved, requires_approval: requiresApproval, summary_data: { content: 'Text', doc_url: '' } });
+        expect(JSON.stringify(body)).not.toContain('zoom-secret');
+        expect(body.zoom_config).toBeUndefined();
+      }
+    );
 
     it("passes a signed-in caller's summary through as upstream returned it", async () => {
       meetingSvc.getPastMeetingById.mockResolvedValue(pastMeeting());
@@ -1822,7 +1873,7 @@ describe('PublicMeetingController public past-meeting artifacts (E4-04)', () => 
 
       expect(addAccessToResourceMock).toHaveBeenCalledWith(req, expect.objectContaining({ id: RESOURCE_ID }), 'v1_past_meeting', 'organizer');
       expect(checkPastMeetingAccessMock).toHaveBeenCalledWith(req, expect.objectContaining({ id: MEETING_ID }), 'm2m-token', false);
-      expect(meetingSvc.getPastMeetingParticipants).toHaveBeenCalledWith(req, RESOURCE_ID, false, { bearerToken: 'm2m-token' });
+      expect(meetingSvc.getPastMeetingParticipants).toHaveBeenCalledWith(req, RESOURCE_ID, true, { bearerToken: 'm2m-token' });
       expect(res.json).toHaveBeenCalledWith({
         participants: [
           {

@@ -994,9 +994,9 @@ export interface PastMeeting extends Meeting {
   /** Composite meeting and occurrence ID (e.g., "99152950841-1630560600000"); used as the canonical id downstream */
   meeting_and_occurrence_id?: string;
   /**
-   * Who may read each artifact, as the meeting service records it on the past meeting (it copies
-   * `artifact_visibility` into all three). Upstream FGA enforces them for a caller's own token; the
-   * BFF reads them only to decide what an anonymous caller may read (E4-04).
+   * Who may read each artifact, as upstream FGA enforces it for a caller's own token. Carried by the
+   * past meeting's query-service document, not by the ITX read (whose `artifact_visibility` is the
+   * recording's level). The BFF reads them only to decide what an anonymous caller may read (E4-04).
    */
   recording_access?: ArtifactVisibility | null;
   transcript_access?: ArtifactVisibility | null;

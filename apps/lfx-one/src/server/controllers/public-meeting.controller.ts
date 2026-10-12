@@ -28,6 +28,7 @@ import {
   isPastMeetingSummaryAwaitingApproval,
   joinAsSentenceList,
   toPublicPastMeetingRoster,
+  toPublicPastMeetingSummary,
   truncateToUtf16Units,
 } from '@lfx-one/shared/utils';
 import { NextFunction, Request, Response } from 'express';
@@ -401,12 +402,18 @@ export class PublicMeetingController {
 
   /**
    * GET /public/api/meetings/past/:id/summary — the AI summary. A summary awaiting approval is the
-   * organizer's alone upstream, so a caller with no session never gets one (404, as for no summary).
+   * organizer's alone upstream, so a caller with no session never gets one (404, as for no summary),
+   * and gets a public one without the Zoom document link, its password or config
+   * (`toPublicPastMeetingSummary`).
    */
   public async getPublicPastMeetingSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
     await this.sendPublicPastArtifact(req, res, next, 'summary', 'get_public_past_meeting_summary', async (resourceId, options) => {
       const summary = await this.meetingService.getPastMeetingSummary(req, resourceId, options);
-      return options && isPastMeetingSummaryAwaitingApproval(summary) ? null : summary;
+      // Signed in (no options): exactly what upstream returned for the caller's own token.
+      if (!options || !summary) {
+        return summary;
+      }
+      return isPastMeetingSummaryAwaitingApproval(summary) ? null : toPublicPastMeetingSummary(summary);
     });
   }
 
@@ -441,7 +448,8 @@ export class PublicMeetingController {
         throw new AuthorizationError("You don't have access to this meeting's participants", { operation, service: 'public_meeting_controller' });
       }
 
-      const participants = await this.meetingService.getPastMeetingParticipants(req, getPastMeetingResourceId(meeting), false, { bearerToken: m2mToken });
+      // Fails on a partial page walk, so a short read never understates the roster or its count.
+      const participants = await this.meetingService.getPastMeetingParticipants(req, getPastMeetingResourceId(meeting), true, { bearerToken: m2mToken });
       const roster = toPublicPastMeetingRoster(participants);
 
       logger.success(req, operation, startTime, {
@@ -1001,8 +1009,8 @@ export class PublicMeetingController {
   }
 
   /**
-   * Sends one past-meeting artifact for the public page (E4-04), or a 404 when there is none.
-   * Failures go to the error handler: 401 when the caller must sign in, 403 / upstream errors as raised.
+   * Sends one past-meeting artifact for the public page (E4-04). Failures go to the error handler: 404
+   * when there is none, 401 when the caller must sign in, upstream errors as raised.
    */
   private async sendPublicPastArtifact<T>(
     req: Request,
@@ -1026,8 +1034,7 @@ export class PublicMeetingController {
       const { resourceId, options } = await this.resolvePublicPastArtifact(req, id, kind, operation);
       const artifact = await read(resourceId, options);
       if (!artifact) {
-        res.status(404).json({ error: 'Not Found', message: `No ${kind} found for past meeting ${id}` });
-        return;
+        throw new ResourceNotFoundError(`Past meeting ${kind}`, id, { operation, service: 'public_meeting_controller' });
       }
 
       logger.success(req, operation, startTime, { past_meeting_id: id, anonymous: !!options });
@@ -1041,11 +1048,13 @@ export class PublicMeetingController {
    * Who reads a past-meeting artifact on a public route, and with which token (E4-04).
    * @description A signed-in caller reads with their own token, so upstream FGA decides exactly as on
    * `/api/past-meetings` (the `recording_viewer` / `transcript_viewer` / `ai_summary_viewer` relations,
-   * which the meeting service derives from the artifact's access level). A caller with no session has
-   * no token for upstream to judge, so the BFF decides: only a public artifact of a public, unrestricted
-   * meeting (`isPastMeetingArtifactPublic`), read with the M2M token. Anything else is a 401, so the
-   * page can offer sign-in. The past meeting itself is read with the M2M token only to resolve the gate
-   * and the artifacts' composite id; none of it is returned.
+   * which the meeting service derives from each artifact's own access level). A caller with no session
+   * has no token for upstream to judge, so the BFF decides: only an artifact whose own level is `public`
+   * on a public, unrestricted meeting (`isPastMeetingArtifactPublic`), read with the M2M token. The
+   * levels come from the past meeting's query-service document, since the ITX read does not carry
+   * them; no document, or an unset level, is not public. Anything else is a 401, so the page can offer
+   * sign-in. The past meeting is read with the M2M token only to resolve the gate and the artifacts'
+   * composite id; none of it is returned.
    */
   private async resolvePublicPastArtifact(
     req: Request,
@@ -1060,7 +1069,8 @@ export class PublicMeetingController {
     if (req.oidc?.isAuthenticated() && req.bearerToken) {
       return { resourceId, options: undefined };
     }
-    if (!isPastMeetingArtifactPublic(meeting, kind)) {
+    const levels = await this.meetingService.getPastMeetingArtifactAccessLevels(req, id, { bearerToken: m2mToken });
+    if (!levels || !isPastMeetingArtifactPublic({ visibility: meeting.visibility, restricted: meeting.restricted, ...levels }, kind)) {
       throw new AuthenticationError(`Sign in to view this meeting's ${kind}`, { operation, service: 'public_meeting_controller' });
     }
     return { resourceId, options: { bearerToken: m2mToken } };

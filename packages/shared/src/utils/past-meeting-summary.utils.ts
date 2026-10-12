@@ -63,3 +63,14 @@ export function getPastMeetingSummaryApprovalState(summary: SummaryApprovalFlags
 export function getPastMeetingSummaryContent(summary: Pick<PastMeetingSummary, 'summary_data'> | null | undefined): string {
   return summary?.summary_data?.edited_content?.trim() || summary?.summary_data?.content?.trim() || '';
 }
+
+/**
+ * A summary as the public past-meeting route gives it to a caller with no session (E4-04): the text,
+ * title, times and approval flags, without the Zoom summary document link and its password, the
+ * Zoom configuration, or the internal email flag.
+ */
+export function toPublicPastMeetingSummary(summary: PastMeetingSummary): PastMeetingSummary {
+  const publicSummary: PastMeetingSummary = { ...summary, password: '', email_sent: false, summary_data: { ...summary.summary_data, doc_url: '' } };
+  delete publicSummary.zoom_config;
+  return publicSummary;
+}

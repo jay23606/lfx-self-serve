@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import {
-  DEFAULT_ARTIFACT_VISIBILITY,
   MEETING_RECORDING_MEDIA_FILE_TYPES,
   MEETING_RECORDING_SESSION_TOLERANCE_MS,
   PAST_MEETING_ARTIFACT_ACCESS_FIELDS,
@@ -164,26 +163,18 @@ export function getPastMeetingResourceId(meeting: Pick<PastMeeting, 'id' | 'meet
 }
 
 /**
- * Who may read one artifact of a past meeting: its own access field, else `artifact_visibility`
- * (which the meeting service copies into all three), else the default, `meeting_participants`.
- */
-export function getPastMeetingArtifactAccess(
-  meeting: Pick<PastMeeting, 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>,
-  kind: PastMeetingArtifactKind
-): ArtifactVisibility {
-  return meeting[PAST_MEETING_ARTIFACT_ACCESS_FIELDS[kind]] ?? meeting.artifact_visibility ?? (DEFAULT_ARTIFACT_VISIBILITY as ArtifactVisibility);
-}
-
-/**
  * Whether a viewer with no session may read one artifact of a past meeting (E4-04): only when the
- * meeting is public and unrestricted and the artifact itself is public. Anyone signed in reads with
- * their own token, and upstream decides.
+ * meeting is public and unrestricted and the artifact's own access level is `public`. An unset or
+ * unrecognised level is never public, as upstream FGA treats it (host-only). Anyone signed in reads
+ * with their own token, and upstream decides.
  */
 export function isPastMeetingArtifactPublic(
-  meeting: Pick<PastMeeting, 'visibility' | 'restricted' | 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>,
+  meeting: Pick<PastMeeting, 'visibility' | 'restricted' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>,
   kind: PastMeetingArtifactKind
 ): boolean {
-  return meeting.visibility === MeetingVisibility.PUBLIC && !meeting.restricted && getPastMeetingArtifactAccess(meeting, kind) === ArtifactVisibility.PUBLIC;
+  return (
+    meeting.visibility === MeetingVisibility.PUBLIC && !meeting.restricted && meeting[PAST_MEETING_ARTIFACT_ACCESS_FIELDS[kind]] === ArtifactVisibility.PUBLIC
+  );
 }
 
 /**

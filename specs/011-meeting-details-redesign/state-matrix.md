@@ -160,7 +160,7 @@ registrants. All four recommendations were accepted; D-1 to D-3 are applied in P
   registers for public meetings, and the time banner already says when the window opens.
 - **D-4 — An anonymous viewer of an ended public-open meeting keeps `tools`.** `full_access` is
   true, but every artifact route requires auth, so E4-01 renders the tools slot's sign-in variant.
-  E4-04 adds the public artifact routes (`/public/api/meetings/past/:id/{recording,transcript,summary}`),
+  E4-04 adds the public artifact routes (`/public/api/meetings/past/:id/{recording,transcript,transcript/content,summary}`),
   which give such a viewer each artifact whose own access level is `public`; the page reads them in
   a follow-up to E4-04. No resolver change.
 
@@ -208,7 +208,7 @@ anonymous included (V1 HTML:585).
 Not decided here, and each blocks the issue named:
 
 - ~~Unapproved AI summaries: hide them (`isPastMeetingSummaryVisible`) or keep "Pending"?~~ — decided in E4-03 (2026-10-12): hidden from non-organizers, who are told it awaits review; organizers see it marked Pending review
-- ~~`artifact_visibility` is authored but enforced nowhere~~ — resolved in E4-04 (2026-10-12): it is enforced upstream. The meeting service copies it into the past meeting's `recording_access` / `transcript_access` / `ai_summary_access`, and FGA gates each artifact on them (`recording_viewer`, `transcript_viewer`, `ai_summary_viewer`) for any caller with their own token. The BFF applies the same levels only to a caller with no session, on the public artifact routes: a `public` artifact of a public, unrestricted meeting, nothing else
+- ~~`artifact_visibility` is authored but enforced nowhere~~ — resolved in E4-04 (2026-10-12): access is enforced upstream, per artifact. The past meeting carries `recording_access` / `transcript_access` / `ai_summary_access` (in its query-service document; the ITX read's `artifact_visibility` is the recording's level), and FGA gates each artifact on its own (`recording_viewer`, `transcript_viewer`, `ai_summary_viewer`) for any caller with their own token; an unset level is host-only. The BFF applies the same levels only to a caller with no session, on the public artifact routes: an artifact whose own level is `public`, on a public, unrestricted meeting, nothing else
 - ~~`show_meeting_attendees` is enforced nowhere and V1 only toasts "Coming Soon"~~ — decided in E3-04: the BFF returns `[]` to a registrant of an unshared meeting, and V2 gives that registrant no people section rather than a placeholder
 - Materials "Primary / Supporting" is really file vs link — E3-02
 - RSVP alongside Join during the window (V1 has no RSVP there) — E2-01

@@ -1508,6 +1508,36 @@ export class MeetingService {
   }
 
   /**
+   * A past meeting's per-artifact access levels (E4-04), from its `v1_past_meeting` query-service
+   * document. The ITX past-meeting read does not carry them (only `artifact_visibility`, which is the
+   * recording's level), while the index document holds all three, each as upstream FGA enforces it.
+   * Null when there is no document, which the caller must treat as not public.
+   */
+  public async getPastMeetingArtifactAccessLevels(
+    req: Request,
+    pastMeetingUid: string,
+    options?: ApiRequestOptions
+  ): Promise<Pick<PastMeeting, 'recording_access' | 'transcript_access' | 'ai_summary_access'> | null> {
+    const { resources } = await this.microserviceProxy.proxyRequest<QueryServiceResponse<PastMeeting>>(
+      req,
+      'LFX_V2_SERVICE',
+      '/query/resources',
+      'GET',
+      { type: 'v1_past_meeting', tags: `past_meeting_id:${pastMeetingUid}` },
+      undefined,
+      undefined,
+      options
+    );
+
+    const record = resources?.[0]?.data;
+    if (!record) {
+      logger.debug(req, 'get_past_meeting_artifact_access_levels', 'No past meeting document found', { past_meeting_id: pastMeetingUid });
+      return null;
+    }
+    return { recording_access: record.recording_access, transcript_access: record.transcript_access, ai_summary_access: record.ai_summary_access };
+  }
+
+  /**
    * Fetches past meeting recording by past meeting UID
    */
   public async getPastMeetingRecording(req: Request, pastMeetingUid: string, options?: ApiRequestOptions): Promise<PastMeetingRecording | null> {

@@ -7,7 +7,6 @@ import { ArtifactVisibility, MeetingVisibility } from '../enums';
 import { EnrichedPastMeetingParticipant, PastMeeting, PastMeetingRecording, RecordingFile, RecordingSession } from '../interfaces';
 import {
   filterPastMeetingParticipants,
-  getPastMeetingArtifactAccess,
   formatRecordingDuration,
   formatRecordingDurationSpoken,
   getLargestSessionShareUrl,
@@ -381,33 +380,28 @@ describe('formatRecordingDuration', () => {
   });
 });
 
-describe('past-meeting artifact access (E4-04)', () => {
-  type AccessFields = Pick<PastMeeting, 'visibility' | 'restricted' | 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>;
-  const meeting = (fields: Partial<AccessFields>): AccessFields => ({
-    visibility: MeetingVisibility.PUBLIC,
-    restricted: false,
-    artifact_visibility: null,
-    ...fields,
+describe('isPastMeetingArtifactPublic (E4-04)', () => {
+  type AccessFields = Pick<PastMeeting, 'visibility' | 'restricted' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>;
+  const meeting = (fields: Partial<AccessFields>): AccessFields => ({ visibility: MeetingVisibility.PUBLIC, restricted: false, ...fields });
+
+  it("reads each artifact's own access level", () => {
+    const record = meeting({ recording_access: ArtifactVisibility.PUBLIC, ai_summary_access: ArtifactVisibility.MEETING_HOSTS });
+    expect(isPastMeetingArtifactPublic(record, 'recording')).toBe(true);
+    expect(isPastMeetingArtifactPublic(record, 'summary')).toBe(false);
   });
 
-  it("reads each artifact's own access level first", () => {
-    const record = meeting({ artifact_visibility: ArtifactVisibility.MEETING_HOSTS, recording_access: ArtifactVisibility.PUBLIC });
-    expect(getPastMeetingArtifactAccess(record, 'recording')).toBe(ArtifactVisibility.PUBLIC);
-    expect(getPastMeetingArtifactAccess(record, 'transcript')).toBe(ArtifactVisibility.MEETING_HOSTS);
+  it('is never public when the level is unset, whatever the meeting-wide artifact_visibility says', () => {
+    const record = { ...meeting({}), artifact_visibility: ArtifactVisibility.PUBLIC };
+    expect(isPastMeetingArtifactPublic(record, 'transcript')).toBe(false);
+    expect(isPastMeetingArtifactPublic(record, 'summary')).toBe(false);
   });
 
-  it('falls back to meeting_participants when nothing is set', () => {
-    expect(getPastMeetingArtifactAccess(meeting({}), 'summary')).toBe(ArtifactVisibility.MEETING_PARTICIPANTS);
-  });
-
-  it('is public only for a public artifact of a public, unrestricted meeting', () => {
-    expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC }), 'summary')).toBe(true);
+  it('is public only for a public, unrestricted meeting', () => {
     expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC, restricted: true }), 'summary')).toBe(false);
     expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC, visibility: MeetingVisibility.PRIVATE }), 'summary')).toBe(
       false
     );
     expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.MEETING_PARTICIPANTS }), 'summary')).toBe(false);
-    expect(isPastMeetingArtifactPublic(meeting({}), 'summary')).toBe(false);
   });
 });
 
