@@ -3,16 +3,20 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { EnrichedPastMeetingParticipant, PastMeetingRecording, RecordingFile, RecordingSession } from '../interfaces';
+import { ArtifactVisibility, MeetingVisibility } from '../enums';
+import { EnrichedPastMeetingParticipant, PastMeeting, PastMeetingRecording, RecordingFile, RecordingSession } from '../interfaces';
 import {
   filterPastMeetingParticipants,
+  getPastMeetingArtifactAccess,
   formatRecordingDuration,
   formatRecordingDurationSpoken,
   getLargestSessionShareUrl,
   getPastMeetingResourceId,
   getPastMeetingStartTimeMs,
   getRecordingDurationSeconds,
+  isPastMeetingArtifactPublic,
   isPastMeetingCalendarRow,
+  toPublicPastMeetingRoster,
 } from './past-meeting.utils';
 
 /** Builds an EnrichedPastMeetingParticipant fixture, defaulting every field so tests set only what they assert on. */
@@ -30,6 +34,7 @@ function participant(partial: Partial<EnrichedPastMeetingParticipant>): Enriched
     org_name: partial.org_name,
     is_attended: partial.is_attended ?? false,
     is_invited: partial.is_invited ?? false,
+    is_unknown: partial.is_unknown,
     org_is_member: partial.org_is_member ?? false,
     org_is_project_member: partial.org_is_project_member ?? false,
     avatar_url: partial.avatar_url,
@@ -373,5 +378,59 @@ describe('formatRecordingDuration', () => {
     expect(formatRecordingDuration(null)).toBeNull();
     expect(formatRecordingDuration(undefined)).toBeNull();
     expect(formatRecordingDuration(-1)).toBeNull();
+  });
+});
+
+describe('past-meeting artifact access (E4-04)', () => {
+  type AccessFields = Pick<PastMeeting, 'visibility' | 'restricted' | 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>;
+  const meeting = (fields: Partial<AccessFields>): AccessFields => ({
+    visibility: MeetingVisibility.PUBLIC,
+    restricted: false,
+    artifact_visibility: null,
+    ...fields,
+  });
+
+  it("reads each artifact's own access level first", () => {
+    const record = meeting({ artifact_visibility: ArtifactVisibility.MEETING_HOSTS, recording_access: ArtifactVisibility.PUBLIC });
+    expect(getPastMeetingArtifactAccess(record, 'recording')).toBe(ArtifactVisibility.PUBLIC);
+    expect(getPastMeetingArtifactAccess(record, 'transcript')).toBe(ArtifactVisibility.MEETING_HOSTS);
+  });
+
+  it('falls back to meeting_participants when nothing is set', () => {
+    expect(getPastMeetingArtifactAccess(meeting({}), 'summary')).toBe(ArtifactVisibility.MEETING_PARTICIPANTS);
+  });
+
+  it('is public only for a public artifact of a public, unrestricted meeting', () => {
+    expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC }), 'summary')).toBe(true);
+    expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC, restricted: true }), 'summary')).toBe(false);
+    expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.PUBLIC, visibility: MeetingVisibility.PRIVATE }), 'summary')).toBe(
+      false
+    );
+    expect(isPastMeetingArtifactPublic(meeting({ ai_summary_access: ArtifactVisibility.MEETING_PARTICIPANTS }), 'summary')).toBe(false);
+    expect(isPastMeetingArtifactPublic(meeting({}), 'summary')).toBe(false);
+  });
+});
+
+describe('toPublicPastMeetingRoster', () => {
+  it('keeps only the public roster fields and counts unidentified attendees', () => {
+    const roster = toPublicPastMeetingRoster([
+      participant({
+        uid: 'p1',
+        first_name: 'Ada',
+        last_name: 'Lovelace',
+        email: 'ada@example.com',
+        job_title: 'Engineer',
+        org_name: 'Acme',
+        is_attended: true,
+      }),
+      participant({ uid: 'p2', first_name: 'Unknown', last_name: 'Caller', is_unknown: true, is_attended: true }),
+    ]);
+
+    expect(roster.unidentified_attendees).toBe(1);
+    expect(roster.participants).toEqual([
+      { uid: 'p1', first_name: 'Ada', last_name: 'Lovelace', avatar_url: undefined, org_name: 'Acme', is_attended: true, is_invited: false },
+    ]);
+    expect(JSON.stringify(roster)).not.toContain('ada@example.com');
+    expect(JSON.stringify(roster)).not.toContain('Engineer');
   });
 });

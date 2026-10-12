@@ -1,8 +1,24 @@
 // Copyright The Linux Foundation and each contributor to LFX.
 // SPDX-License-Identifier: MIT
 
-import { MEETING_RECORDING_MEDIA_FILE_TYPES, MEETING_RECORDING_SESSION_TOLERANCE_MS } from '../constants/meeting.constants';
-import { EnrichedPastMeetingParticipant, Meeting, PastMeeting, PastMeetingRecording, PastParticipantFilters, RecordingSession } from '../interfaces';
+import {
+  DEFAULT_ARTIFACT_VISIBILITY,
+  MEETING_RECORDING_MEDIA_FILE_TYPES,
+  MEETING_RECORDING_SESSION_TOLERANCE_MS,
+  PAST_MEETING_ARTIFACT_ACCESS_FIELDS,
+} from '../constants/meeting.constants';
+import { ArtifactVisibility, MeetingVisibility } from '../enums';
+import {
+  EnrichedPastMeetingParticipant,
+  Meeting,
+  PastMeeting,
+  PastMeetingArtifactKind,
+  PastMeetingParticipant,
+  PastMeetingRecording,
+  PastParticipantFilters,
+  PublicPastMeetingRoster,
+  RecordingSession,
+} from '../interfaces';
 import { firstValidTimestampMs } from './iso-timestamp.utils';
 
 // scheduled_start_time can be absent or a Go zero-date depending on the row's source — fall back to
@@ -145,6 +161,50 @@ export function formatRecordingDurationSpoken(seconds: number | null | undefined
 // still expose a distinct id while Me-lens rows normalize id to the composite value.
 export function getPastMeetingResourceId(meeting: Pick<PastMeeting, 'id' | 'meeting_and_occurrence_id'>): string {
   return meeting.meeting_and_occurrence_id ?? meeting.id;
+}
+
+/**
+ * Who may read one artifact of a past meeting: its own access field, else `artifact_visibility`
+ * (which the meeting service copies into all three), else the default, `meeting_participants`.
+ */
+export function getPastMeetingArtifactAccess(
+  meeting: Pick<PastMeeting, 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>,
+  kind: PastMeetingArtifactKind
+): ArtifactVisibility {
+  return meeting[PAST_MEETING_ARTIFACT_ACCESS_FIELDS[kind]] ?? meeting.artifact_visibility ?? (DEFAULT_ARTIFACT_VISIBILITY as ArtifactVisibility);
+}
+
+/**
+ * Whether a viewer with no session may read one artifact of a past meeting (E4-04): only when the
+ * meeting is public and unrestricted and the artifact itself is public. Anyone signed in reads with
+ * their own token, and upstream decides.
+ */
+export function isPastMeetingArtifactPublic(
+  meeting: Pick<PastMeeting, 'visibility' | 'restricted' | 'artifact_visibility' | 'recording_access' | 'transcript_access' | 'ai_summary_access'>,
+  kind: PastMeetingArtifactKind
+): boolean {
+  return meeting.visibility === MeetingVisibility.PUBLIC && !meeting.restricted && getPastMeetingArtifactAccess(meeting, kind) === ArtifactVisibility.PUBLIC;
+}
+
+/**
+ * The public roster of a past meeting (`meeting-surface-boundary.md` § Public roster fields): name,
+ * avatar, organization and attended / invited for each identified participant, and a count of the
+ * attendees who could not be matched to anyone. Never email, job title or committee standing.
+ */
+export function toPublicPastMeetingRoster(participants: PastMeetingParticipant[]): PublicPastMeetingRoster {
+  const identified = participants.filter((participant) => !participant.is_unknown);
+  return {
+    participants: identified.map(({ uid, first_name, last_name, avatar_url, org_name, is_attended, is_invited }) => ({
+      uid,
+      first_name,
+      last_name,
+      avatar_url,
+      org_name,
+      is_attended,
+      is_invited,
+    })),
+    unidentified_attendees: participants.length - identified.length,
+  };
 }
 
 /** Past-meeting list rows carry scheduled_start_time and/or past-only identity fields. */
