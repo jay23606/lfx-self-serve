@@ -35,6 +35,10 @@ export interface HealthMetricsNonMembersOrg {
   distinctPeople: number | null;
   contributions: number | null;
   isNew: boolean;
+  /** The model's membership status; `null` when unset. */
+  membershipStatus: string | null;
+  /** The model's fit band (`High`, `Medium` or `Low`); `null` when unscored. */
+  fitBand: string | null;
 }
 
 export interface HealthMetricsNonMembersOrgs {
@@ -62,6 +66,10 @@ export interface HealthMetricsNonMembersOrgRowView {
   peopleLabel: string;
   contributionsLabel: string;
   lastEngagedLabel: string;
+  membershipLabel: string;
+  fitLabel: string;
+  /** The fit dot's fill; `null` hides the dot for an unscored organization. */
+  fitDotClass: string | null;
 }
 
 /** `GET /api/analytics/non-members-people` — one page of the period's engaged non-member individuals. */

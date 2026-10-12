@@ -1,7 +1,11 @@
 // Copyright The Linux Foundation and each contributor to LFX.
 // SPDX-License-Identifier: MIT
 
-import { HEALTH_METRICS_NON_MEMBERS_NOT_AVAILABLE, HEALTH_METRICS_NON_MEMBERS_SECTIONS } from '../constants/health-metrics-non-members.constants';
+import {
+  HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS,
+  HEALTH_METRICS_NON_MEMBERS_NOT_AVAILABLE,
+  HEALTH_METRICS_NON_MEMBERS_SECTIONS,
+} from '../constants/health-metrics-non-members.constants';
 import { formatIsoDateLabel } from './date-time.utils';
 import { formatCurrency } from './number.utils';
 
@@ -36,6 +40,8 @@ export function buildHealthMetricsNonMembersOrgRows(rows: HealthMetricsNonMember
     peopleLabel: formatCount(row.distinctPeople),
     contributionsLabel: formatCount(row.contributions),
     lastEngagedLabel: row.lastEngagedDate ? formatIsoDateLabel(row.lastEngagedDate) : '—',
+    membershipLabel: row.membershipStatus?.trim() || 'Non-member',
+    ...buildFit(row.fitBand),
   }));
 }
 
@@ -113,4 +119,10 @@ function buildWarmestBars(orgs: HealthMetricsNonMembersWarmOrg[]): HealthMetrics
 
 function formatStat(value: number | null): string {
   return value === null ? HEALTH_METRICS_NON_MEMBERS_NOT_AVAILABLE : Math.round(value).toLocaleString('en-US');
+}
+
+function buildFit(fitBand: string | null): Pick<HealthMetricsNonMembersOrgRowView, 'fitLabel' | 'fitDotClass'> {
+  const band = fitBand?.trim();
+  if (!band) return { fitLabel: '—', fitDotClass: null };
+  return { fitLabel: band, fitDotClass: HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS[band] ?? HEALTH_METRICS_NON_MEMBERS_FIT_BAND_DOT_CLASS['Low'] };
 }
