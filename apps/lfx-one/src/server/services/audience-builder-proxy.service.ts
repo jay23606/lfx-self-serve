@@ -8,6 +8,12 @@ import type {
   AudienceComposeMasterRequest,
   AudienceComposeMasterResult,
   AudienceComposedList,
+  AudienceCustomCriteria,
+  AudienceCustomInterpretRequest,
+  AudienceCustomInterpretResult,
+  AudienceCustomOperator,
+  AudienceCustomPreview,
+  AudienceCustomRequest,
   AudienceDiscoveredEvent,
   AudienceDiscoveredList,
   AudienceDiscoveryResult,
@@ -179,12 +185,58 @@ interface WireQaSuppressionCheck extends WireQaCheck {
 
 interface WireQaExclusionCheck extends WireQaCheck {
   exclusion_count: number;
+  send_time_count?: number;
 }
 
 interface WireQaChecks {
   signal_mapping: WireQaCheck;
   suppression: WireQaSuppressionCheck;
   exclusion_completeness: WireQaExclusionCheck;
+  current_registrants?: WireQaCheck;
+}
+
+interface WireCustomPropertyFilter {
+  property: string;
+  operator: string;
+  values?: string[];
+}
+
+interface WireCustomCriteria {
+  cities?: string[];
+  countries?: string[];
+  contact_location?: boolean;
+  event_registered?: boolean;
+  education_enrolled?: boolean;
+  registered_for?: string[];
+  gate_event_history?: boolean;
+  gate_list_id?: string;
+  property_filters?: WireCustomPropertyFilter[];
+  speakers?: { scope: string; list_id?: string; event_names?: string[] };
+  ambassadors?: boolean;
+  education_topics?: string[];
+  education_topic_property?: string;
+  page_view_urls?: string[];
+  label?: string;
+}
+
+interface WireCustomInterpretResult {
+  criteria: WireCustomCriteria;
+  brand_short?: string;
+  gate?: WireListSearchResult;
+  speakers_list?: WireListSearchResult;
+  questions: { id: string; question: string; why?: string; options: string[] }[];
+  notes: string[];
+  similar?: { list: WireListSearchResult; recommendation?: string; reason?: string }[];
+}
+
+interface WireCustomPreviewResult {
+  name: string;
+  criteria: WireCustomCriteria;
+  branch_count: number;
+  education_topic_candidates?: string[];
+  gate?: WireListSearchResult;
+  upper_bound?: number;
+  warnings: string[];
 }
 
 interface WireQaCandidate {
@@ -376,6 +428,68 @@ function toRecordedAudience(wire: WireRecordedAudience, briefId: string): Campai
   };
 }
 
+function toSearchResult(wire: WireListSearchResult | undefined): AudienceListSearchResult | undefined {
+  if (!wire) return undefined;
+  return { listId: wire.list_id, name: wire.name, size: wire.size, hubspotUrl: httpHref(wire.hubspot_url) };
+}
+
+/** Upstream criteria → client criteria. Every array is present, never undefined. */
+function toCustomCriteria(wire: WireCustomCriteria): AudienceCustomCriteria {
+  return {
+    cities: wire.cities ?? [],
+    countries: wire.countries ?? [],
+    contactLocation: wire.contact_location === true,
+    eventRegistered: wire.event_registered === true,
+    educationEnrolled: wire.education_enrolled === true,
+    registeredFor: wire.registered_for ?? [],
+    gateEventHistory: wire.gate_event_history === true,
+    gateListId: wire.gate_list_id || undefined,
+    propertyFilters: (wire.property_filters ?? []).map((f) => ({
+      property: f.property,
+      operator: f.operator as AudienceCustomOperator,
+      values: f.values ?? [],
+    })),
+    speakers: wire.speakers
+      ? { scope: wire.speakers.scope as AudienceSpeakerScope, listId: wire.speakers.list_id || undefined, eventNames: wire.speakers.event_names ?? [] }
+      : undefined,
+    ambassadors: wire.ambassadors === true,
+    educationTopics: wire.education_topics ?? [],
+    educationTopicProperty: wire.education_topic_property || undefined,
+    pageViewUrls: wire.page_view_urls ?? [],
+    label: wire.label || undefined,
+  };
+}
+
+/** Client criteria → upstream criteria. Optional ids are omitted rather than sent blank. */
+function toWireCriteria(criteria: AudienceCustomCriteria): WireCustomCriteria {
+  return {
+    cities: criteria.cities,
+    countries: criteria.countries,
+    contact_location: criteria.contactLocation,
+    event_registered: criteria.eventRegistered,
+    education_enrolled: criteria.educationEnrolled,
+    registered_for: criteria.registeredFor,
+    gate_event_history: criteria.gateEventHistory,
+    ...(criteria.gateListId ? { gate_list_id: criteria.gateListId } : {}),
+    property_filters: criteria.propertyFilters.map((f) => ({ property: f.property, operator: f.operator, values: f.values })),
+    ...(criteria.speakers
+      ? {
+          speakers: {
+            scope: criteria.speakers.scope,
+            ...(criteria.speakers.listId ? { list_id: criteria.speakers.listId } : {}),
+            event_names: criteria.speakers.eventNames,
+          },
+        }
+      : {}),
+    ambassadors: criteria.ambassadors,
+    education_topics: criteria.educationTopics,
+    page_view_urls: criteria.pageViewUrls,
+    // Upstream honours it only when it is one of the portal's candidates.
+    ...(criteria.educationTopicProperty ? { education_topic_property: criteria.educationTopicProperty } : {}),
+    ...(criteria.label ? { label: criteria.label } : {}),
+  };
+}
+
 function toFinding(wire: WireQaFinding): AudienceQaFinding {
   return {
     severity: wire.severity as AudienceQaSeverity,
@@ -438,7 +552,11 @@ function narrowQaResult(wire: WireQaResult): AudienceQaResult {
       exclusionCompleteness: {
         ...toCheck(checks.exclusion_completeness),
         exclusionCount: checks.exclusion_completeness.exclusion_count,
+        ...(checks.exclusion_completeness.send_time_count ? { sendTimeCount: checks.exclusion_completeness.send_time_count } : {}),
       },
+      // Omitted, not defaulted: absent means the check did not run, and a defaulted verdict
+      // would read as a result.
+      ...(checks.current_registrants ? { currentRegistrants: toCheck(checks.current_registrants) } : {}),
     },
     findings: (wire.findings ?? []).map(toFinding),
     overall: (wire.overall ?? 'NEEDS VERIFY') as AudienceQaVerdict,
@@ -668,8 +786,78 @@ export class AudienceBuilderProxyService {
       list_ref: request.listRef,
       targets_eu: request.targetsEu === true,
       targets_ca: request.targetsCa === true,
+      ...(request.eventName ? { event_name: request.eventName } : {}),
+      ...(request.sendSuppressionListIds?.length ? { send_suppression_list_ids: request.sendSuppressionListIds } : {}),
     });
     return narrowQaResult(wire);
+  }
+
+  /** Free text → draft criteria. Uses a model upstream; creates nothing. */
+  public async interpretCustom(req: Request, projectSlug: string, request: AudienceCustomInterpretRequest): Promise<AudienceCustomInterpretResult> {
+    const wire = await this.post<WireCustomInterpretResult>(req, projectSlug, 'custom/interpret', {
+      request: request.request,
+      ...(request.eventUrl ? { event_url: request.eventUrl } : {}),
+      ...(request.answers?.length
+        ? {
+            answers: request.answers.map((a) => ({
+              ...(a.questionId ? { question_id: a.questionId } : {}),
+              ...(a.question ? { question: a.question } : {}),
+              answer: a.answer,
+            })),
+          }
+        : {}),
+    });
+    return {
+      criteria: toCustomCriteria(required(wire.criteria, 'criteria')),
+      brandShort: wire.brand_short || undefined,
+      gate: toSearchResult(wire.gate),
+      speakersList: toSearchResult(wire.speakers_list),
+      questions: (wire.questions ?? []).map((q) => ({ id: q.id, question: q.question, why: q.why || undefined, options: q.options ?? [] })),
+      notes: wire.notes ?? [],
+      similar: (wire.similar ?? [])
+        .filter((s) => !!s.list?.list_id)
+        .map((s) => ({
+          list: toSearchResult(s.list) as AudienceListSearchResult,
+          recommendation: (['reuse', 'update', 'unrelated'] as const).find((r) => r === s.recommendation),
+          reason: s.reason || undefined,
+        })),
+    };
+  }
+
+  /** What `createCustom` would build. Creates nothing. */
+  public async previewCustom(req: Request, projectSlug: string, request: AudienceCustomRequest): Promise<AudienceCustomPreview> {
+    const wire = await this.post<WireCustomPreviewResult>(req, projectSlug, 'custom/preview', { custom: this.customBody(request) });
+    return {
+      name: required(wire.name, 'name'),
+      criteria: toCustomCriteria(required(wire.criteria, 'criteria')),
+      branchCount: required(wire.branch_count, 'branch_count'),
+      educationTopicCandidates: wire.education_topic_candidates ?? [],
+      gate: toSearchResult(wire.gate),
+      upperBound: wire.upper_bound,
+      warnings: wire.warnings ?? [],
+    };
+  }
+
+  /**
+   * Creates ONE list in the project's portal. Not idempotent: an unconfirmed create is thrown as
+   * an {@link AudienceComposePartialError} carrying the name, exactly as compose does.
+   */
+  public async createCustom(req: Request, projectSlug: string, request: AudienceCustomRequest): Promise<AudienceComposedList> {
+    try {
+      const wire = await this.post<WireComposedList>(req, projectSlug, 'custom/create', { custom: this.customBody(request) });
+      return toCreatedList(wire, 'list');
+    } catch (error) {
+      const partial = asComposePartial(error);
+      if (partial) {
+        throw new AudienceComposePartialError(
+          partial.message?.trim() || 'HubSpot did not confirm the list was created. Search the portal for it before trying again.',
+          undefined,
+          undefined,
+          partial.master_name?.trim() || undefined
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -690,6 +878,10 @@ export class AudienceBuilderProxyService {
       suppressionListIds: required(wire.suppression_list_ids, 'suppression_list_ids'),
       audience: toRecordedAudience(required(wire.audience, 'audience'), request.briefId),
     };
+  }
+
+  private customBody(request: AudienceCustomRequest): Record<string, unknown> {
+    return { criteria: toWireCriteria(request.criteria), ...(request.name ? { name: request.name } : {}) };
   }
 
   /**

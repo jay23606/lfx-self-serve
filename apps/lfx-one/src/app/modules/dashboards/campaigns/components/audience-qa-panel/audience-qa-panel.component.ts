@@ -39,6 +39,14 @@ export class AudienceQaPanelComponent {
    * previous suggestion — a ref the operator typed is never overwritten.
    */
   public readonly suggestedListRef = input('');
+  /**
+   * The discovered event's name. Sent with the run so upstream can check that THIS edition's own
+   * registrants are suppressed rather than included; blank skips that check (it is then absent
+   * from the report, never shown as a pass).
+   */
+  public readonly eventName = input('');
+  /** Suppression lists this send applies at send time; counted with the list's own exclusions. */
+  public readonly sendSuppressionIds = input<readonly string[]>([]);
 
   // === Forms ===
   protected readonly listRefControl = new FormControl('', { nonNullable: true });
@@ -177,7 +185,13 @@ export class AudienceQaPanelComponent {
     const targetsCa = this.targetsCaControl.value;
     this.submitted.set({ listRef: ref, targetsEu, targetsCa });
     this.campaignService
-      .runAudienceQa(this.projectSlug(), { listRef: ref, targetsEu, targetsCa })
+      .runAudienceQa(this.projectSlug(), {
+        listRef: ref,
+        targetsEu,
+        targetsCa,
+        ...(this.eventName().trim() ? { eventName: this.eventName().trim() } : {}),
+        ...(this.sendSuppressionIds().length ? { sendSuppressionListIds: [...this.sendSuppressionIds()] } : {}),
+      })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (result) => {
@@ -286,8 +300,27 @@ export class AudienceQaPanelComponent {
         name: 'Exclusion completeness',
         verdict: report.checks.exclusionCompleteness.verdict,
         findings: report.checks.exclusionCompleteness.findings,
-        note: `${report.checks.exclusionCompleteness.exclusionCount} exclusion filter(s) on the list`,
+        note: this.exclusionNote(report.checks.exclusionCompleteness.exclusionCount, report.checks.exclusionCompleteness.sendTimeCount ?? 0),
       },
+      // Present only when upstream could run it; an absent check is "not run", never a row.
+      ...(report.checks.currentRegistrants
+        ? [
+            {
+              key: 'currentRegistrants' as const,
+              name: 'Current registrants',
+              verdict: report.checks.currentRegistrants.verdict,
+              findings: report.checks.currentRegistrants.findings,
+              note: "This edition's own registrants should be suppressed, not included",
+            },
+          ]
+        : []),
     ];
+  }
+
+  private exclusionNote(total: number, sendTime: number): string {
+    if (sendTime === 0) {
+      return `${total} exclusion filter(s) on the list`;
+    }
+    return `${total} exclusion(s): ${total - sendTime} on the list, ${sendTime} applied at send time`;
   }
 }

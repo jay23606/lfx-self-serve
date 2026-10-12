@@ -289,4 +289,56 @@ describe('AudienceQaPanelComponent', () => {
 
     expect(runAudienceQa).not.toHaveBeenCalled();
   });
+
+  describe('current registrants', () => {
+    it('sends the event name so upstream can check this edition is suppressed', () => {
+      runAudienceQa.mockReturnValue(of(report()));
+      fixture.componentRef.setInput('eventName', '  Synthetic Summit 2026 ');
+      fixture.detectChanges();
+
+      enterRefAndRun();
+
+      expect(runAudienceQa).toHaveBeenCalledWith('tlf', { listRef: '601', targetsEu: false, targetsCa: false, eventName: 'Synthetic Summit 2026' });
+    });
+
+    it('sends no event name when there is none, and shows no fourth row', () => {
+      runAudienceQa.mockReturnValue(of(report()));
+
+      enterRefAndRun();
+
+      expect(runAudienceQa).toHaveBeenCalledWith('tlf', { listRef: '601', targetsEu: false, targetsCa: false });
+      expect(host().textContent).not.toContain('Current registrants');
+    });
+
+    it('shows the check when upstream ran it', () => {
+      runAudienceQa.mockReturnValue(of(report({ checks: checks({ currentRegistrants: { verdict: 'FAIL', findings: [] } }), overall: 'FAIL' })));
+
+      enterRefAndRun();
+
+      expect(host().textContent).toContain('Current registrants');
+    });
+  });
+
+  describe('send-time suppression', () => {
+    it('sends the suppression lists the send applies, and says which exclusions are send-time', () => {
+      runAudienceQa.mockReturnValue(
+        of(report({ checks: checks({ exclusionCompleteness: { verdict: 'PASS', findings: [], exclusionCount: 3, sendTimeCount: 3 } }) }))
+      );
+      fixture.componentRef.setInput('sendSuppressionIds', ['201', '202', '203']);
+      fixture.detectChanges();
+
+      enterRefAndRun();
+
+      expect(runAudienceQa.mock.calls.at(-1)?.[1]).toMatchObject({ sendSuppressionListIds: ['201', '202', '203'] });
+      expect(host().textContent).toContain('0 on the list, 3 applied at send time');
+    });
+
+    it('sends none when the send applies none', () => {
+      runAudienceQa.mockReturnValue(of(report()));
+
+      enterRefAndRun();
+
+      expect(runAudienceQa.mock.calls.at(-1)?.[1]).not.toHaveProperty('sendSuppressionListIds');
+    });
+  });
 });

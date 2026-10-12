@@ -3,6 +3,7 @@
 
 import { HttpErrorResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { AudienceCustomService } from '@services/audience-custom.service';
 import { CampaignService } from '@services/campaign.service';
 import { NEVER, of, Subject, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,10 +25,14 @@ import type {
   AudienceDiscoveryResult,
   AudienceDiscoverySSEEventType,
   AudienceLastSentEmail,
+  AudienceSignal,
   AudienceSuppressionList,
   SSEEvent,
 } from '@lfx-one/shared/interfaces';
 
+import { By } from '@angular/platform-browser';
+
+import { AudienceCustomBuilderComponent } from '../audience-custom-builder/audience-custom-builder.component';
 import { AudienceBuilderTabComponent } from './audience-builder-tab.component';
 
 const EVENT: AudienceDiscoveredEvent = { eventName: 'Synthetic Summit 2026', brandShort: 'SYN', eventDates: ['2026-03-02', '2026-03-04'] };
@@ -101,6 +106,8 @@ describe('AudienceBuilderTabComponent', () => {
     await TestBed.configureTestingModule({
       imports: [AudienceBuilderTabComponent],
       providers: [
+        // The custom builder child owns its own requests; none of these specs drive it.
+        { provide: AudienceCustomService, useValue: { interpret: vi.fn(() => NEVER), preview: vi.fn(() => NEVER), create: vi.fn(() => NEVER) } },
         {
           provide: CampaignService,
           useValue: {
@@ -2760,6 +2767,155 @@ describe('AudienceBuilderTabComponent', () => {
       search('speakers');
 
       expect(host().querySelectorAll('[role="alert"]').length).toBe(0);
+    });
+  });
+
+  describe('custom audiences', () => {
+    async function renderWithDiscovery(missing: AudienceSignal[] = []): Promise<void> {
+      await render();
+      typeEventUrl('https://events.example.org/synthetic-summit');
+      click('campaigns-audience-discover');
+      completeDiscovery({ ...discovered(), missingSignals: missing });
+    }
+
+    function builder(): AudienceCustomBuilderComponent {
+      return fixture.debugElement.query(By.directive(AudienceCustomBuilderComponent)).componentInstance as AudienceCustomBuilderComponent;
+    }
+
+    it('adds a list the custom builder created to the inclusion set', async () => {
+      await renderWithDiscovery();
+
+      builder().created.emit({ listId: '7777', name: '26Q1 - Seoul - Mailable Contacts', hubspotUrl: 'https://app.hubspot.com/x/7777' });
+      fixture.detectChanges();
+
+      expect(host().querySelector('[data-testid="campaigns-audience-remove-7777"]'), 'a created list must join Include like a hand-added one').not.toBeNull();
+    });
+
+    it('opens the builder with a reviewable speakers preset for a missing speakers signal', async () => {
+      await renderWithDiscovery(['event_speakers']);
+
+      click('audience-missing-signals-create-event_speakers');
+
+      expect(builder().preset()).toMatchObject({
+        criteria: { label: 'Synthetic Summit 2026', speakers: { scope: 'current', eventNames: ['Synthetic Summit 2026'] } },
+      });
+    });
+
+    it('sends a typed master name with the compose', async () => {
+      await renderWithDiscovery();
+      composeAudienceMaster.mockReturnValue(NEVER);
+      click('audience-card-grid-toggle-101');
+      const name = host().querySelector<HTMLInputElement>('[data-testid="campaigns-audience-compose-name"]');
+      if (name === null) {
+        throw new Error('the master name field is not rendered');
+      }
+      name.value = '  My Master  ';
+      name.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      click('campaigns-audience-compose');
+
+      expect(composeAudienceMaster.mock.calls.at(-1)?.[1]?.name).toBe('My Master');
+    });
+  });
+
+  describe('legacy parity additions', () => {
+    async function discover(missing: AudienceSignal[] = []): Promise<void> {
+      await render();
+      typeEventUrl('https://events.example.org/synthetic-summit/');
+      click('campaigns-audience-discover');
+      completeDiscovery({ ...discovered(), missingSignals: missing });
+    }
+
+    function builderPreset(): unknown {
+      return (fixture.debugElement.query(By.directive(AudienceCustomBuilderComponent)).componentInstance as AudienceCustomBuilderComponent).preset();
+    }
+
+    it('pre-fills a page-view list from the event URL, without the scheme', async () => {
+      await discover(['page_view']);
+
+      click('audience-missing-signals-create-page_view');
+
+      expect(builderPreset()).toMatchObject({ criteria: { pageViewUrls: ['events.example.org/synthetic-summit'] } });
+    });
+
+    it('asks the model for an education list scoped to the brand', async () => {
+      await discover(['education_enrollment']);
+
+      click('audience-missing-signals-create-education_enrollment');
+
+      expect((builderPreset() as { request: string }).request).toContain("SYN's education courses");
+    });
+
+    it('plans an event audience from the event page through the model, without discovery', async () => {
+      await render();
+      typeEventUrl('https://events.example.org/synthetic-summit/');
+
+      click('campaigns-audience-event-generate');
+
+      expect(discoverAudience, 'an event audience needs no discovery').not.toHaveBeenCalled();
+      expect(builderPreset()).toMatchObject({ eventUrl: 'https://events.example.org/synthetic-summit/' });
+      expect((builderPreset() as { request: string }).request).toContain('Regional expansion audience');
+    });
+
+    it('opens on Event Audience, like the legacy builder, and switches modes', async () => {
+      await render();
+
+      expect(host().querySelector('[data-testid="campaigns-audience-mode-event"]')?.getAttribute('aria-selected')).toBe('true');
+      expect(host().querySelector('[data-testid="campaigns-audience-event-panel"]')).not.toBeNull();
+      expect(host().querySelector('[data-testid="campaigns-audience-reuse-view"]')?.classList.contains('hidden')).toBe(true);
+
+      click('campaigns-audience-mode-reuse');
+
+      expect(host().querySelector('[data-testid="campaigns-audience-reuse-view"]')?.classList.contains('hidden')).toBe(false);
+      expect(host().querySelector('[data-testid="campaigns-audience-custom"]')?.classList.contains('hidden')).toBe(true);
+    });
+
+    it('uses an existing list without discovery, and loads the suppressions it needs', async () => {
+      await render();
+      searchAudienceLists.mockReturnValue(of([{ listId: '777', name: 'Synthetic Summit - Prospects', size: 10, hubspotUrl: 'https://app.hubspot.com/x/777' }]));
+      const input = host().querySelector<HTMLInputElement>('[data-testid="campaigns-audience-use-existing-search"]');
+      if (input === null) throw new Error('the existing-list search is not rendered');
+      vi.useFakeTimers();
+      try {
+        input.value = 'prospects';
+        input.dispatchEvent(new Event('input'));
+        vi.advanceTimersByTime(AUDIENCE_LIST_TYPEAHEAD_DEBOUNCE_MS);
+      } finally {
+        vi.useRealTimers();
+      }
+      fixture.detectChanges();
+
+      click('campaigns-audience-use-existing-777');
+
+      expect(
+        host().querySelector('[data-testid="campaigns-audience-remove-777"]'),
+        'the Review step appears for a list chosen without discovery'
+      ).not.toBeNull();
+      expect(getAudienceSuppressionLists).toHaveBeenCalledWith('tlf', '', '');
+    });
+
+    it('adds a reused existing list to Include', async () => {
+      await discover();
+
+      (fixture.debugElement.query(By.directive(AudienceCustomBuilderComponent)).componentInstance as AudienceCustomBuilderComponent).reuse.emit({
+        listId: '411',
+        name: '25Q3 - Seoul - Mailable Contacts',
+        hubspotUrl: 'https://app.hubspot.com/x/411',
+      });
+      fixture.detectChanges();
+
+      expect(host().querySelector('[data-testid="campaigns-audience-remove-411"]')).not.toBeNull();
+    });
+
+    it('counts the ticked suppressions exactly, and hides the count once they change', async () => {
+      await discover();
+      previewAudienceCount.mockReturnValue(of({ exact: true, count: 1234, estimate: 1300 }));
+
+      click('campaigns-audience-suppression-count-run');
+
+      expect(previewAudienceCount).toHaveBeenLastCalledWith('tlf', { listIds: expect.arrayContaining(['201']) });
+      expect(host().querySelector('[data-testid="campaigns-audience-suppression-count-value"]')?.textContent).toContain('1,234');
     });
   });
 });

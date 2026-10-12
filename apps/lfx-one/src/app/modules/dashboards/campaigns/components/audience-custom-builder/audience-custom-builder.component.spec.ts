@@ -1,0 +1,269 @@
+// Copyright The Linux Foundation and each contributor to LFX.
+// SPDX-License-Identifier: MIT
+
+import { HttpErrorResponse } from '@angular/common/http';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { AudienceCustomService } from '@services/audience-custom.service';
+import { of, throwError } from 'rxjs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { AudienceComposedList, AudienceCustomCriteria, AudienceCustomInterpretResult, AudienceCustomPreview } from '@lfx-one/shared/interfaces';
+
+import { AudienceCustomBuilderComponent } from './audience-custom-builder.component';
+
+function criteria(overrides: Partial<AudienceCustomCriteria> = {}): AudienceCustomCriteria {
+  return {
+    cities: ['Seoul'],
+    countries: [],
+    contactLocation: true,
+    eventRegistered: true,
+    educationEnrolled: false,
+    registeredFor: [],
+    gateEventHistory: false,
+    gateListId: '26716',
+    propertyFilters: [],
+    ambassadors: false,
+    educationTopics: [],
+    pageViewUrls: [],
+    label: 'Synthetic Summit Seoul',
+    ...overrides,
+  };
+}
+
+const interpretation: AudienceCustomInterpretResult = {
+  criteria: criteria(),
+  brandShort: 'SYN',
+  gate: { listId: '26716', name: '26Q2 - Synthetic Foundation - Master-list', hubspotUrl: 'https://app.hubspot.com/x/26716' },
+  questions: [{ id: 'mailability', question: 'Gate event history?', options: ['Match the reference pattern', 'Stricter'] }],
+  notes: ['A note'],
+  similar: [
+    {
+      list: { listId: '411', name: '25Q3 - Seoul - Mailable Contacts', hubspotUrl: 'https://app.hubspot.com/x/411' },
+      recommendation: 'update',
+      reason: 'Older quarter',
+    },
+  ],
+};
+
+const preview: AudienceCustomPreview = {
+  name: '26Q4 - Seoul - Mailable Contacts - Synthetic Summit Seoul',
+  criteria: criteria(),
+  branchCount: 3,
+  educationTopicCandidates: [],
+  upperBound: 120000,
+  warnings: [],
+};
+
+const created: AudienceComposedList = { listId: '7777', name: preview.name, hubspotUrl: 'https://app.hubspot.com/x/7777' };
+
+describe('AudienceCustomBuilderComponent', () => {
+  let fixture: ComponentFixture<AudienceCustomBuilderComponent>;
+  const service = { interpret: vi.fn(), preview: vi.fn(), create: vi.fn() };
+
+  beforeEach(async () => {
+    service.interpret.mockReset().mockReturnValue(of(interpretation));
+    service.preview.mockReset().mockReturnValue(of(preview));
+    service.create.mockReset().mockReturnValue(of(created));
+    await TestBed.configureTestingModule({
+      imports: [AudienceCustomBuilderComponent],
+      providers: [{ provide: AudienceCustomService, useValue: service }],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(AudienceCustomBuilderComponent);
+    fixture.componentRef.setInput('projectSlug', 'tlf');
+    fixture.detectChanges();
+  });
+
+  function host(): HTMLElement {
+    return fixture.nativeElement as HTMLElement;
+  }
+
+  function el<T extends HTMLElement>(testId: string): T {
+    const found = host().querySelector<T>(`[data-testid="${testId}"]`);
+    if (found === null) {
+      throw new Error(`${testId} is not rendered`);
+    }
+    return found;
+  }
+
+  function type(testId: string, value: string): void {
+    const input = el<HTMLInputElement | HTMLTextAreaElement>(testId);
+    input.value = value;
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  function click(testId: string): void {
+    el<HTMLButtonElement>(testId).click();
+    fixture.detectChanges();
+  }
+
+  function interpretSeoul(): void {
+    type('audience-custom-builder-request', 'Mailable contacts in Seoul for Synthetic Summit Seoul');
+    click('audience-custom-builder-interpret');
+  }
+
+  it('drafts criteria from a description and fills the form, gate included', () => {
+    interpretSeoul();
+
+    expect(service.interpret).toHaveBeenCalledWith('tlf', { request: 'Mailable contacts in Seoul for Synthetic Summit Seoul', answers: [] });
+    expect(el<HTMLInputElement>('audience-custom-builder-cities').value).toBe('Seoul');
+    expect(el<HTMLInputElement>('audience-custom-builder-gate').value).toBe('26716');
+    expect(el('audience-custom-builder-gate-found').textContent).toContain('Synthetic Foundation');
+    expect(el('audience-custom-builder-notes').textContent).toContain('A note');
+  });
+
+  it('re-interprets with the chosen answer, keeping the original request', () => {
+    interpretSeoul();
+    click('audience-custom-builder-option-mailability-1');
+
+    expect(service.interpret).toHaveBeenLastCalledWith('tlf', {
+      request: 'Mailable contacts in Seoul for Synthetic Summit Seoul',
+      answers: [{ questionId: 'mailability', question: 'Gate event history?', answer: 'Stricter' }],
+    });
+  });
+
+  it('falls back to the form when no model is configured', () => {
+    service.interpret.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 503, error: { message: 'no model' } })));
+
+    interpretSeoul();
+
+    expect(host().querySelector('[data-testid="audience-custom-builder-criteria"]'), 'the form must open so the operator is not stuck').not.toBeNull();
+    expect(host().querySelector('[data-testid="audience-custom-builder-interpret-error"]')).not.toBeNull();
+  });
+
+  it('sends the edited criteria to preview, not the draft', () => {
+    interpretSeoul();
+    type('audience-custom-builder-countries', 'South Korea, ');
+    click('audience-custom-builder-filter-add');
+    const row = el('audience-custom-builder-filter-0');
+    const prop = row.querySelector<HTMLInputElement>('input[formcontrolname="property"]')!;
+    prop.value = 'jobtitle';
+    prop.dispatchEvent(new Event('input'));
+    const values = row.querySelector<HTMLInputElement>('input[formcontrolname="values"]')!;
+    values.value = 'director, vp';
+    values.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+
+    click('audience-custom-builder-preview');
+
+    const sent = service.preview.mock.calls[0][1];
+    expect(sent.criteria.countries).toEqual(['South Korea']);
+    expect(sent.criteria.propertyFilters).toEqual([{ property: 'jobtitle', operator: 'contains', values: ['director', 'vp'] }]);
+    expect(el('audience-custom-builder-upper-bound').textContent).toContain('120,000');
+    expect(el<HTMLInputElement>('audience-custom-builder-name').value).toBe(preview.name);
+  });
+
+  it('drops the preview as soon as the criteria change, so create always follows a fresh preview', () => {
+    interpretSeoul();
+    click('audience-custom-builder-preview');
+    expect(host().querySelector('[data-testid="audience-custom-builder-create"]')).not.toBeNull();
+
+    type('audience-custom-builder-cities', 'Busan');
+
+    expect(host().querySelector('[data-testid="audience-custom-builder-preview-result"]')).toBeNull();
+  });
+
+  it('creates only after an explicit confirmation, then emits the list', () => {
+    const emitted: AudienceComposedList[] = [];
+    fixture.componentInstance.created.subscribe((list) => emitted.push(list));
+    interpretSeoul();
+    click('audience-custom-builder-preview');
+
+    click('audience-custom-builder-create');
+    expect(service.create, 'the first click only asks for confirmation').not.toHaveBeenCalled();
+    expect(el('audience-custom-builder-confirm').textContent).toContain(preview.name);
+
+    click('audience-custom-builder-confirm-create');
+
+    expect(service.create).toHaveBeenCalledTimes(1);
+    expect(emitted).toEqual([created]);
+    expect(el('audience-custom-builder-created').textContent).toContain(preview.name);
+  });
+
+  it('blocks a retry after an unconfirmed create and names the list to search for', () => {
+    service.create.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 502, error: { masterName: 'Seoul (v2)', error: 'x' } })));
+    interpretSeoul();
+    click('audience-custom-builder-preview');
+    click('audience-custom-builder-create');
+    click('audience-custom-builder-confirm-create');
+
+    expect(el('audience-custom-builder-unconfirmed').textContent).toContain('Seoul (v2)');
+    expect(host().querySelector('[data-testid="audience-custom-builder-create"]'), 'no button may offer a second create').toBeNull();
+  });
+
+  it('applies a deterministic preset without calling the model', () => {
+    fixture.componentRef.setInput('preset', { version: 1, criteria: { label: 'Synthetic Summit', registeredFor: ['Synthetic Summit 2026'] } });
+    fixture.detectChanges();
+
+    expect(service.interpret).not.toHaveBeenCalled();
+    expect(el<HTMLInputElement>('audience-custom-builder-registered-for').value).toBe('Synthetic Summit 2026');
+  });
+
+  it('interprets a request preset', () => {
+    fixture.componentRef.setInput('preset', { version: 2, request: 'Contacts opted in to SYN project emails' });
+    fixture.detectChanges();
+
+    expect(service.interpret).toHaveBeenCalledWith('tlf', { request: 'Contacts opted in to SYN project emails', answers: [] });
+  });
+
+  it('offers similar existing lists and reuses one without creating anything', () => {
+    const reused: string[] = [];
+    fixture.componentInstance.reuse.subscribe((list) => reused.push(list.listId));
+    interpretSeoul();
+
+    expect(el('audience-custom-builder-similar-411').textContent).toContain('consider building a new version');
+    click('audience-custom-builder-reuse-411');
+
+    expect(reused).toEqual(['411']);
+    expect(service.create).not.toHaveBeenCalled();
+    expect(el<HTMLButtonElement>('audience-custom-builder-reuse-411').disabled, 'a list is added once').toBe(true);
+  });
+
+  it('sends course topics and page URLs, and shows the property the service matched', () => {
+    service.preview.mockReturnValue(of({ ...preview, criteria: criteria({ educationTopics: ['Kubernetes'], educationTopicProperty: 'course_name' }) }));
+    interpretSeoul();
+    type('audience-custom-builder-topics', 'Kubernetes');
+    type('audience-custom-builder-page-urls', 'events.example.org/synthetic-summit');
+
+    click('audience-custom-builder-preview');
+
+    const sent = service.preview.mock.calls[0][1];
+    expect(sent.criteria.educationTopics).toEqual(['Kubernetes']);
+    expect(sent.criteria.pageViewUrls).toEqual(['events.example.org/synthetic-summit']);
+    expect(sent.criteria, 'no property is sent until the operator picks one').not.toHaveProperty('educationTopicProperty');
+    expect(el('audience-custom-builder-topic-property').textContent).toContain('course_name');
+  });
+
+  it('lets the operator pick another course property and sends it with the next preview', () => {
+    service.preview.mockReturnValue(
+      of({
+        ...preview,
+        educationTopicCandidates: ['course_name', 'course_code'],
+        criteria: criteria({ educationTopics: ['Kubernetes'], educationTopicProperty: 'course_name' }),
+      })
+    );
+    interpretSeoul();
+    type('audience-custom-builder-topics', 'Kubernetes');
+    click('audience-custom-builder-preview');
+
+    const select = el<HTMLSelectElement>('audience-custom-builder-topic-property-select');
+    select.value = 'course_code';
+    select.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    click('audience-custom-builder-preview');
+
+    expect(service.preview.mock.calls.at(-1)?.[1].criteria.educationTopicProperty).toBe('course_code');
+  });
+
+  it('plans an event preset from its page, and keeps the page for answers', () => {
+    fixture.componentRef.setInput('preset', { version: 3, eventUrl: 'https://events.example.org/x', request: 'Plan the event audience' });
+    fixture.detectChanges();
+
+    expect(service.interpret).toHaveBeenCalledWith('tlf', { request: 'Plan the event audience', answers: [], eventUrl: 'https://events.example.org/x' });
+
+    click('audience-custom-builder-option-mailability-0');
+
+    expect(service.interpret.mock.calls.at(-1)?.[1].eventUrl, 'an answer re-plans from the same page').toBe('https://events.example.org/x');
+  });
+});

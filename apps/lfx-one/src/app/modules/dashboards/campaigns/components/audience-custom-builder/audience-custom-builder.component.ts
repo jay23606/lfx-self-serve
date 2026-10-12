@@ -1,0 +1,459 @@
+// Copyright The Linux Foundation and each contributor to LFX.
+// SPDX-License-Identifier: MIT
+
+import { HttpErrorResponse } from '@angular/common/http';
+import { Component, computed, DestroyRef, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { FormArray, FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { AudienceCustomService } from '@services/audience-custom.service';
+import { serverAuthoredMessage } from '@shared/utils/http-error.utils';
+
+import { AUDIENCE_CUSTOM_OPERATORS, AUDIENCE_SPEAKER_SCOPES } from '@lfx-one/shared/constants';
+import type {
+  AudienceComposedList,
+  AudienceCustomAnswer,
+  AudienceCustomCriteria,
+  AudienceCustomOperator,
+  AudienceCustomPreset,
+  AudienceCustomPreview,
+  AudienceCustomQuestion,
+  AudienceCustomSimilarList,
+  AudienceListSearchResult,
+  AudienceSpeakerScope,
+} from '@lfx-one/shared/interfaces';
+
+type FilterGroup = FormGroup<{ property: FormControl<string>; operator: FormControl<AudienceCustomOperator>; values: FormControl<string> }>;
+
+/** Splits a comma/newline-separated field into trimmed, non-blank values. */
+function splitValues(raw: string): string[] {
+  return raw
+    .split(/[,\n]/)
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/**
+ * "Build a custom audience" — the legacy builder's Custom Audience tab.
+ *
+ * Describe the audience in words, answer the questions the model raises, review and edit the
+ * resulting criteria, preview what would be built, then create ONE HubSpot list. The created list
+ * is emitted for the container to add to the Include selection, so compose, QA and attach treat it
+ * like any other list.
+ *
+ * Self-contained by design: the flow has its own requests and states, none of which feed the tab's
+ * discovery state. The model only drafts criteria — the service builds the HubSpot filter from them,
+ * and nothing is created without an explicit confirmation.
+ */
+@Component({
+  selector: 'lfx-audience-custom-builder',
+  imports: [ReactiveFormsModule],
+  templateUrl: './audience-custom-builder.component.html',
+  styleUrl: './audience-custom-builder.component.scss',
+})
+export class AudienceCustomBuilderComponent {
+  // === Services ===
+  private readonly customService = inject(AudienceCustomService);
+  private readonly destroyRef = inject(DestroyRef);
+
+  // === Inputs ===
+  public readonly projectSlug = input.required<string>();
+  public readonly disabled = input(false);
+  /** The discovered event's name, used as the default label for list names. */
+  public readonly eventName = input('');
+  public readonly preset = input<AudienceCustomPreset | null>(null);
+
+  // === Outputs ===
+  public readonly created = output<AudienceComposedList>();
+  /** An existing list the operator chose to reuse instead of creating one. */
+  public readonly reuse = output<AudienceListSearchResult>();
+
+  // === Constants ===
+  protected readonly operators = AUDIENCE_CUSTOM_OPERATORS;
+  protected readonly speakerScopes = AUDIENCE_SPEAKER_SCOPES;
+
+  // === Forms ===
+  protected readonly requestControl = new FormControl('', { nonNullable: true });
+  protected readonly otherAnswerControl = new FormControl('', { nonNullable: true });
+  protected readonly nameControl = new FormControl('', { nonNullable: true });
+  protected readonly form = new FormGroup({
+    cities: new FormControl('', { nonNullable: true }),
+    countries: new FormControl('', { nonNullable: true }),
+    contactLocation: new FormControl(false, { nonNullable: true }),
+    eventRegistered: new FormControl(false, { nonNullable: true }),
+    educationEnrolled: new FormControl(false, { nonNullable: true }),
+    registeredFor: new FormControl('', { nonNullable: true }),
+    gateEventHistory: new FormControl(false, { nonNullable: true }),
+    gateListId: new FormControl('', { nonNullable: true }),
+    speakersOn: new FormControl(false, { nonNullable: true }),
+    speakerScope: new FormControl<AudienceSpeakerScope>('current_past', { nonNullable: true }),
+    speakerListId: new FormControl('', { nonNullable: true }),
+    speakerEventNames: new FormControl('', { nonNullable: true }),
+    ambassadors: new FormControl(false, { nonNullable: true }),
+    educationTopics: new FormControl('', { nonNullable: true }),
+    educationTopicProperty: new FormControl('', { nonNullable: true }),
+    pageViewUrls: new FormControl('', { nonNullable: true }),
+    label: new FormControl('', { nonNullable: true }),
+    propertyFilters: new FormArray<FilterGroup>([]),
+  });
+
+  // === Writable Signals ===
+  /** Whether the criteria form is open (after an interpretation, or "fill in by hand"). */
+  protected readonly editing = signal(false);
+  protected readonly interpreting = signal(false);
+  protected readonly interpretError = signal<string | null>(null);
+  protected readonly questions = signal<AudienceCustomQuestion[]>([]);
+  protected readonly notes = signal<string[]>([]);
+  /** Existing lists that may already be this audience, ranked by the model. */
+  protected readonly similar = signal<AudienceCustomSimilarList[]>([]);
+  /** Ids reused from `similar`, so each button reads as done. */
+  protected readonly reusedIds = signal<ReadonlySet<string>>(new Set<string>());
+  /** The topic property the last preview resolved, shown so the operator sees what is filtered. */
+  protected readonly topicProperty = signal<string | null>(null);
+  /** The education properties the last preview offered; more than one shows a picker. */
+  protected readonly topicCandidates = signal<string[]>([]);
+  protected readonly answers = signal<AudienceCustomAnswer[]>([]);
+  /** The event page an event-audience preset plans from; kept across answers. */
+  protected readonly eventUrl = signal('');
+  protected readonly gate = signal<AudienceListSearchResult | null>(null);
+  protected readonly preview = signal<AudienceCustomPreview | null>(null);
+  protected readonly previewing = signal(false);
+  protected readonly previewError = signal<string | null>(null);
+  protected readonly confirming = signal(false);
+  protected readonly creating = signal(false);
+  protected readonly createError = signal<string | null>(null);
+  /** Set when HubSpot did not confirm a create: the name to search for before trying again. */
+  protected readonly unconfirmedName = signal<string | null>(null);
+  protected readonly createdList = signal<AudienceComposedList | null>(null);
+
+  // === Computed Signals ===
+  private readonly formValue = toSignal(this.form.valueChanges, { initialValue: this.form.getRawValue() });
+  protected readonly speakersOn = computed(() => this.formValue().speakersOn === true);
+  protected readonly busy = computed(() => this.interpreting() || this.previewing() || this.creating());
+  protected readonly locked = computed(() => this.disabled() || this.busy());
+  /** Create stays disabled until a preview of the CURRENT criteria exists. */
+  protected readonly canCreate = computed(() => !!this.preview() && !this.locked() && !this.unconfirmedName());
+  protected readonly upperBoundText = computed(() => {
+    const bound = this.preview()?.upperBound;
+    return bound === undefined ? null : bound.toLocaleString('en-US');
+  });
+
+  // === Private state ===
+  /** Guards replies: a reply to a superseded request must not overwrite newer state. */
+  private seq = 0;
+
+  public get filterRows(): FormArray<FilterGroup> {
+    return this.form.controls.propertyFilters;
+  }
+
+  public constructor() {
+    // Any edit makes the preview describe criteria that no longer exist, so it is dropped — a
+    // Create must always follow a preview of exactly what will be created.
+    this.form.valueChanges.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.invalidatePreview());
+    this.nameControl.valueChanges.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.invalidatePreview());
+
+    effect(() => {
+      const preset = this.preset();
+      if (preset) {
+        untracked(() => this.applyPreset(preset));
+      }
+    });
+  }
+
+  // === Protected Methods ===
+
+  protected onInterpret(): void {
+    const request = this.requestControl.value.trim();
+    if (!request || this.locked()) {
+      return;
+    }
+    this.answers.set([]);
+    this.interpret(request);
+  }
+
+  protected onAnswer(question: AudienceCustomQuestion, answer: string): void {
+    const text = answer.trim();
+    if (!text || this.locked()) {
+      return;
+    }
+    // A later answer to the same question replaces the earlier one.
+    this.answers.update((list) => [
+      ...list.filter((a) => a.questionId !== question.id),
+      { questionId: question.id, question: question.question, answer: text },
+    ]);
+    this.otherAnswerControl.setValue('');
+    this.interpret(this.requestControl.value.trim());
+  }
+
+  /** Adds an existing list to Include instead of creating a new one. */
+  protected onReuse(item: AudienceCustomSimilarList): void {
+    if (this.disabled() || this.reusedIds().has(item.list.listId)) {
+      return;
+    }
+    this.reusedIds.update((ids) => new Set([...ids, item.list.listId]));
+    this.reuse.emit(item.list);
+  }
+
+  protected recommendationLabel(item: AudienceCustomSimilarList): string {
+    switch (item.recommendation) {
+      case 'reuse':
+        return 'Likely the same audience';
+      case 'update':
+        return 'Close — consider building a new version';
+      case 'unrelated':
+        return 'Probably a different audience';
+    }
+    return 'Not assessed';
+  }
+
+  protected onFillByHand(): void {
+    this.editing.set(true);
+    this.interpretError.set(null);
+    if (!this.form.controls.label.value && this.eventName()) {
+      this.form.controls.label.setValue(this.eventName());
+    }
+  }
+
+  protected onAddFilter(): void {
+    this.filterRows.push(this.filterGroup('', 'contains', ''));
+  }
+
+  protected onRemoveFilter(index: number): void {
+    this.filterRows.removeAt(index);
+  }
+
+  protected takesValues(index: number): boolean {
+    const op = this.filterRows.at(index)?.controls.operator.value;
+    return op !== 'is_known' && op !== 'is_unknown';
+  }
+
+  protected onPreview(): void {
+    if (this.locked()) {
+      return;
+    }
+    const seq = ++this.seq;
+    const project = this.projectSlug();
+    this.previewing.set(true);
+    this.previewError.set(null);
+    this.confirming.set(false);
+    this.customService
+      .preview(project, this.request())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (preview) => {
+          if (seq !== this.seq) return;
+          this.preview.set(preview);
+          this.topicProperty.set(preview.criteria.educationTopicProperty ?? null);
+          this.topicCandidates.set(preview.educationTopicCandidates);
+          // Reflect the property the service actually used, without counting it as an edit.
+          this.form.controls.educationTopicProperty.setValue(preview.criteria.educationTopicProperty ?? '', { emitEvent: false });
+          this.previewing.set(false);
+          if (!this.nameControl.value) {
+            this.nameControl.setValue(preview.name, { emitEvent: false });
+          }
+        },
+        error: (err: HttpErrorResponse) => {
+          if (seq !== this.seq) return;
+          this.previewError.set(serverAuthoredMessage(err, 'Could not preview this audience. Check the criteria and try again.'));
+          this.previewing.set(false);
+        },
+      });
+  }
+
+  protected onAskConfirm(): void {
+    if (this.canCreate()) {
+      this.confirming.set(true);
+    }
+  }
+
+  protected onCancelConfirm(): void {
+    this.confirming.set(false);
+  }
+
+  protected onCreate(): void {
+    if (!this.canCreate() || !this.confirming()) {
+      return;
+    }
+    const seq = ++this.seq;
+    this.creating.set(true);
+    this.createError.set(null);
+    this.customService
+      .create(this.projectSlug(), this.request())
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (list) => {
+          if (seq !== this.seq) return;
+          this.creating.set(false);
+          this.confirming.set(false);
+          this.createdList.set(list);
+          this.created.emit(list);
+        },
+        error: (err: HttpErrorResponse) => {
+          if (seq !== this.seq) return;
+          this.creating.set(false);
+          this.confirming.set(false);
+          if (err.status === 502) {
+            // Not retryable: HubSpot may have created the list. Create stays disabled until the
+            // operator starts over, so a double click cannot make a second one.
+            const body = err.error as { masterName?: string } | null;
+            this.unconfirmedName.set(body?.masterName || this.nameControl.value || 'the custom list');
+            return;
+          }
+          this.createError.set(serverAuthoredMessage(err, 'The list could not be created.'));
+        },
+      });
+  }
+
+  protected onStartOver(): void {
+    this.seq++;
+    this.requestControl.setValue('');
+    this.nameControl.setValue('', { emitEvent: false });
+    this.resetCriteria({});
+    this.editing.set(false);
+    this.questions.set([]);
+    this.notes.set([]);
+    this.similar.set([]);
+    this.reusedIds.set(new Set<string>());
+    this.topicProperty.set(null);
+    this.topicCandidates.set([]);
+    this.answers.set([]);
+    this.eventUrl.set('');
+    this.gate.set(null);
+    this.interpretError.set(null);
+    this.unconfirmedName.set(null);
+    this.createdList.set(null);
+    this.createError.set(null);
+    this.interpreting.set(false);
+    this.previewing.set(false);
+    this.creating.set(false);
+  }
+
+  // === Private Methods ===
+
+  private interpret(request: string): void {
+    const seq = ++this.seq;
+    this.interpreting.set(true);
+    this.interpretError.set(null);
+    this.customService
+      .interpret(this.projectSlug(), { request, answers: this.answers(), ...(this.eventUrl() ? { eventUrl: this.eventUrl() } : {}) })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          if (seq !== this.seq) return;
+          this.interpreting.set(false);
+          this.questions.set(result.questions);
+          this.notes.set(result.notes);
+          this.similar.set(result.similar);
+          this.gate.set(result.gate ?? null);
+          this.resetCriteria(result.criteria);
+          if (!this.form.controls.label.value && this.eventName()) {
+            this.form.controls.label.setValue(this.eventName());
+          }
+          this.editing.set(true);
+        },
+        error: (err: HttpErrorResponse) => {
+          if (seq !== this.seq) return;
+          this.interpreting.set(false);
+          // No model configured is not a dead end: the criteria can be filled in by hand.
+          if (err.status === 503) {
+            this.onFillByHand();
+            this.interpretError.set(serverAuthoredMessage(err, 'Describing an audience is unavailable here. Fill in the criteria by hand instead.'));
+            return;
+          }
+          this.interpretError.set(serverAuthoredMessage(err, 'Could not interpret that request. Rephrase it, or fill in the criteria by hand.'));
+        },
+      });
+  }
+
+  private applyPreset(preset: AudienceCustomPreset): void {
+    this.onStartOver();
+    this.eventUrl.set(preset.eventUrl ?? '');
+    if (preset.criteria) {
+      this.resetCriteria(preset.criteria);
+      this.editing.set(true);
+    }
+    if (preset.request) {
+      this.requestControl.setValue(preset.request);
+      if (!preset.criteria) {
+        this.interpret(preset.request);
+      }
+    }
+  }
+
+  private resetCriteria(c: Partial<AudienceCustomCriteria>): void {
+    this.filterRows.clear({ emitEvent: false });
+    for (const f of c.propertyFilters ?? []) {
+      this.filterRows.push(this.filterGroup(f.property, f.operator, f.values.join(', ')), { emitEvent: false });
+    }
+    this.form.patchValue({
+      cities: (c.cities ?? []).join(', '),
+      countries: (c.countries ?? []).join(', '),
+      contactLocation: c.contactLocation === true,
+      eventRegistered: c.eventRegistered === true,
+      educationEnrolled: c.educationEnrolled === true,
+      registeredFor: (c.registeredFor ?? []).join(', '),
+      gateEventHistory: c.gateEventHistory === true,
+      gateListId: c.gateListId ?? '',
+      speakersOn: !!c.speakers,
+      speakerScope: c.speakers?.scope ?? 'current_past',
+      speakerListId: c.speakers?.listId ?? '',
+      speakerEventNames: (c.speakers?.eventNames ?? []).join(', '),
+      ambassadors: c.ambassadors === true,
+      educationTopics: (c.educationTopics ?? []).join(', '),
+      educationTopicProperty: c.educationTopicProperty ?? '',
+      pageViewUrls: (c.pageViewUrls ?? []).join(', '),
+      label: c.label ?? '',
+    });
+    this.invalidatePreview();
+  }
+
+  private request(): { criteria: AudienceCustomCriteria; name?: string } {
+    const v = this.form.getRawValue();
+    const criteria: AudienceCustomCriteria = {
+      cities: splitValues(v.cities),
+      countries: splitValues(v.countries),
+      contactLocation: v.contactLocation,
+      eventRegistered: v.eventRegistered,
+      educationEnrolled: v.educationEnrolled,
+      registeredFor: splitValues(v.registeredFor),
+      gateEventHistory: v.gateEventHistory,
+      propertyFilters: v.propertyFilters.map((f) => ({
+        property: f.property.trim(),
+        operator: f.operator,
+        values: f.operator === 'is_known' || f.operator === 'is_unknown' ? [] : splitValues(f.values),
+      })),
+      ambassadors: v.ambassadors,
+      educationTopics: splitValues(v.educationTopics),
+      ...(v.educationTopicProperty.trim() ? { educationTopicProperty: v.educationTopicProperty.trim() } : {}),
+      pageViewUrls: splitValues(v.pageViewUrls),
+      ...(v.gateListId.trim() ? { gateListId: v.gateListId.trim() } : {}),
+      ...(v.label.trim() ? { label: v.label.trim() } : {}),
+      ...(v.speakersOn
+        ? {
+            speakers: {
+              scope: v.speakerScope,
+              eventNames: splitValues(v.speakerEventNames),
+              ...(v.speakerListId.trim() ? { listId: v.speakerListId.trim() } : {}),
+            },
+          }
+        : {}),
+    };
+    const name = this.nameControl.value.trim();
+    return { criteria, ...(name ? { name } : {}) };
+  }
+
+  private filterGroup(property: string, operator: AudienceCustomOperator, values: string): FilterGroup {
+    return new FormGroup({
+      property: new FormControl(property, { nonNullable: true }),
+      operator: new FormControl<AudienceCustomOperator>(operator, { nonNullable: true }),
+      values: new FormControl(values, { nonNullable: true }),
+    });
+  }
+
+  private invalidatePreview(): void {
+    if (this.preview()) {
+      this.preview.set(null);
+    }
+    this.confirming.set(false);
+    this.previewError.set(null);
+  }
+}
