@@ -86,8 +86,12 @@ function stubUpstream(options: {
     if (path !== '/query/resources') throw new Error(`unexpected upstream call ${path}`);
     if (query['type'] === 'project_membership') {
       if (typeof options.memberships === 'function') return options.memberships();
+      // Like query-service, answer only the memberships of the requested project slug.
+      const slug = String(query['filters_all']).replace('project_slug:', '');
       return {
-        resources: (options.memberships ?? []).map((data) => ({ type: 'project_membership', id: data.b2b_org_uid, data: { project_slug: 'tlf', ...data } })),
+        resources: (options.memberships ?? [])
+          .map((data) => ({ type: 'project_membership', id: data.b2b_org_uid, data: { project_slug: 'tlf', ...data } }))
+          .filter((resource) => resource.data.project_slug === slug),
       };
     }
     if (query['type'] === 'b2b_org') {
@@ -533,6 +537,41 @@ describe('NewsletterMemberBenefitService', () => {
       proxyRequest.mockClear();
       expect(await service.findMemberCompanyForEmail(req, M2M, 'pat@gmail.example')).toBeNull();
       expect(proxyRequest).not.toHaveBeenCalled();
+    });
+
+    it("checks a named foundation's own members, separately from TLF's", async () => {
+      const BETA_AAIF: Membership = {
+        b2b_org_uid: ORG_B,
+        company_domain: 'beta-labs.example',
+        company_name: 'Beta Labs',
+        status: 'Active',
+        project_slug: 'aaif',
+      };
+      stubUpstream({ memberships: [ACME_ACTIVE, BETA_AAIF] });
+
+      // Acme is a TLF member but not an AAIF member; Beta is the reverse.
+      expect(await service.findMemberCompanyForEmail(req, M2M, 'pat@acme-motors.example', 'aaif')).toBeNull();
+      expect(await service.findMemberCompanyForEmail(req, M2M, 'kim@beta-labs.example', 'aaif')).toEqual({ b2b_org_uid: ORG_B, company_name: 'Beta Labs' });
+      expect(await service.findMemberCompanyForEmail(req, M2M, 'pat@acme-motors.example')).toEqual({ b2b_org_uid: ORG_A, company_name: 'Acme Motors' });
+      expect(await service.findMemberCompanyForEmail(req, M2M, 'kim@beta-labs.example')).toBeNull();
+
+      const membershipQueries = proxyRequest.mock.calls.filter((call) => call[4]['type'] === 'project_membership').map((call) => call[4]['filters_all']);
+      // One cached load per roster.
+      expect(membershipQueries).toEqual(['project_slug:aaif', 'project_slug:tlf']);
+    });
+
+    it("treats an empty foundation roster as an outage (503), never as 'not a member', and does not cache it", async () => {
+      stubUpstream({ memberships: [ACME_ACTIVE] });
+
+      await expect(service.findMemberCompanyForEmail(req, M2M, 'pat@acme-motors.example', 'renamed-foundation')).rejects.toMatchObject({
+        statusCode: 503,
+        code: 'MEMBER_BENEFIT_INDEX_UNAVAILABLE',
+      });
+      stubUpstream({ memberships: [{ ...ACME_ACTIVE, project_slug: 'renamed-foundation' }] });
+      await expect(service.findMemberCompanyForEmail(req, M2M, 'pat@acme-motors.example', 'renamed-foundation')).resolves.toEqual({
+        b2b_org_uid: ORG_A,
+        company_name: 'Acme Motors',
+      });
     });
   });
 
