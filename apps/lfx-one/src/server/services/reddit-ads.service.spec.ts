@@ -404,9 +404,9 @@ describe('executeRedditCampaignCreation — the authored post', () => {
    * Upstream's first branch is `if objective == ""`, so an empty objective is ABSENT there, not
    * invalid. Pinned because the obvious `??` spelling does not express it — it would pass `''`
    * through to the unsupported-objective refusal and reject a create upstream accepts. Reachable:
-   * `POST /api/campaigns` forwards `redditConfig` without validating `objective`.
+   * `POST /api/campaigns/create` forwards `redditConfig` without validating `objective`.
    */
-  it.each([undefined, ''])('falls back to the default objective when the request carries %p', async (objective) => {
+  it.each([undefined, ''])('falls back to the default objective when the request carries %s', async (objective) => {
     await executeRedditCampaignCreation(undefined, config({ objective }));
 
     // DEFAULT_REDDIT_OBJECTIVE is `conversions`, whose table goal is PURCHASE.
@@ -414,6 +414,19 @@ describe('executeRedditCampaignCreation — the authored post', () => {
       objective: 'CONVERSIONS',
       optimization_goal: 'PURCHASE',
     });
+  });
+
+  /**
+   * The other half of that branch, and the reason `||` is not the spelling either: upstream decodes
+   * `objective` into a Go string, so a non-string refuses at decode and never reaches
+   * `CreateCampaign`. `||` would read these as absent and quietly create a budgeted `conversions`
+   * campaign instead — an under-refusal, the mirror of the `??` over-refusal above. Reachable by
+   * the same unvalidated route.
+   */
+  it.each([false, 0])('refuses the non-string objective %s rather than defaulting', async (objective) => {
+    await expect(executeRedditCampaignCreation(undefined, config({ objective }))).rejects.toThrow(/Unsupported Reddit objective/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   /** The other three objectives keep taking the goal the table carries. */

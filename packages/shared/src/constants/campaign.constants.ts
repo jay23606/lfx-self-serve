@@ -1528,7 +1528,7 @@ export const REDDIT_VIDEO_GOALS = ['VIDEO_VIEW_6S', 'VIDEO_VIEW_15S'] as const;
  * the legacy creator refuses before its first upstream call, beside the budget and date checks.
  *
  * `videoGoal` is typed loosely because the legacy creator reaches this from
- * `POST /api/campaigns`, which forwards `redditConfig` without validating it — the declared
+ * `POST /api/campaigns/create`, which forwards `redditConfig` without validating it — the declared
  * `RedditVideoGoal` is what a caller is supposed to send, not what one always does (#3449).
  */
 export function resolveRedditOptimizationGoal(objective: RedditObjective, videoGoal?: string): string {

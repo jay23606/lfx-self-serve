@@ -898,7 +898,7 @@ describe('resolveRedditOptimizationGoal', () => {
   });
 
   /**
-   * Reached only after a runtime widening — `POST /api/campaigns` forwards `redditConfig` without
+   * Reached only after a runtime widening — `POST /api/campaigns/create` forwards `redditConfig` without
    * validating `objective`, so the compiler's guarantee does not hold at this boundary.
    */
   it('refuses an objective outside the table', () => {

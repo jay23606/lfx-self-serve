@@ -693,11 +693,17 @@ export async function executeRedditCampaignCreation(req: Request | undefined, co
   // the first upstream call — see `resolveRedditAuthoredPost`.
   const authoredPost = resolveRedditAuthoredPost(config, validatedPostId);
 
-  // `||`, not `??`: upstream's branch is `if objective == ""`, so an empty string is ABSENT there
-  // and falls back to the default. `??` would pass `''` through to be refused below — a create
-  // upstream accepts, refused here, which is the one failure mode a guard mirroring upstream must
-  // not have. Reachable because `POST /api/campaigns` forwards `redditConfig` unvalidated.
-  const objective = config.objective || DEFAULT_REDDIT_OBJECTIVE;
+  // Upstream's branch is `if objective == ""`, so ONLY an absent or empty objective takes the
+  // default; everything else goes to the table lookup below. Neither operator expresses that on its
+  // own, which is why this is spelled out: `??` would pass `''` through to be refused — a create
+  // upstream accepts, refused here — and `||` would swallow `false` and `0`, which upstream rejects
+  // when it decodes `objective` into a Go string, so those have to reach the refusal rather than
+  // quietly become a budgeted `conversions` campaign. The field is declared `RedditObjective`, but
+  // `POST /api/campaigns/create` forwards `redditConfig` with no validation (see
+  // `executeRedditDispatch`), so all of those values genuinely arrive here.
+  const requestedObjective = config.objective as RedditObjective | '' | null | undefined;
+  const objective =
+    requestedObjective === '' || requestedObjective === null || requestedObjective === undefined ? DEFAULT_REDDIT_OBJECTIVE : requestedObjective;
   const objParams = REDDIT_OBJECTIVE_PARAMS[objective];
   // Belt-and-suspenders: TypeScript guarantees coverage but this guards against runtime widening
   if (!objParams) {
